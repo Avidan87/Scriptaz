@@ -411,7 +411,8 @@ class DatabaseManager:
                 active_custom_theme_title=rows.get("active_custom_theme_title"),
                 personal_context=rows.get("personal_context", ""),
                 launch_on_startup=rows.get("launch_on_startup", "false").lower() == "true",
-                dark_mode=rows.get("dark_mode", "false").lower() == "true"
+                dark_mode=rows.get("dark_mode", "false").lower() == "true",
+                has_completed_onboarding=rows.get("has_completed_onboarding", "false").lower() == "true"
             )
 
     def get_user_settings(self) -> UserSettingsModel:
@@ -433,7 +434,8 @@ class DatabaseManager:
                 "active_custom_theme_title": settings.active_custom_theme_title or "",
                 "personal_context": settings.personal_context,
                 "launch_on_startup": str(settings.launch_on_startup).lower(),
-                "dark_mode": str(settings.dark_mode).lower()
+                "dark_mode": str(settings.dark_mode).lower(),
+                "has_completed_onboarding": str(settings.has_completed_onboarding).lower()
             }
             for k, v in settings_dict.items():
                 cursor.execute(

@@ -90,6 +90,16 @@ def run_app():
 
     # Standard Daemon Mode (Menu Bar / System Tray Runner)
     tray = ScriptazTrayApp(app)
+
+    # First-Launch Detection: If user has never completed onboarding, open Welcome Panel!
+    settings = db.get_user_settings()
+    if not settings.has_completed_onboarding:
+        welcome_dialog = SettingsDialog(is_welcome_mode=True)
+        welcome_dialog.settings_saved.connect(lambda _: tray._on_settings_reloaded())
+        welcome_dialog.show()
+        welcome_dialog.raise_()
+        welcome_dialog.activateWindow()
+
     print("✨ Scriptaz is running quietly in your Menu Bar / System Tray.")
     sys.exit(app.exec())
 

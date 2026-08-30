@@ -61,6 +61,7 @@ class UserSettingsModel(BaseModel):
     personal_context: str = Field(default="", max_length=1000)
     launch_on_startup: bool = False
     dark_mode: bool = False
+    has_completed_onboarding: bool = False
 
     @property
     def preferred_bible_version(self) -> str:

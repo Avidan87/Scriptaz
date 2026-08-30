@@ -1248,7 +1248,8 @@ class SettingsDialog(QDialog):
             active_custom_theme_title=self.active_custom_title,
             personal_context=self.context_input.toPlainText().strip(),
             launch_on_startup=self.settings.launch_on_startup,
-            dark_mode=self.is_dark
+            dark_mode=self.is_dark,
+            has_completed_onboarding=True
         )
         db.save_user_settings(updated)
         self.settings_saved.emit(updated)
