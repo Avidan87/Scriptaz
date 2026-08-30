@@ -72,6 +72,26 @@ class BedrockEngine:
     # ----------------------------------------------------------------------
     # 1. Vector Embeddings (Titan V2)
     # ----------------------------------------------------------------------
+    def generate_text(self, prompt: str, system_prompt: Optional[str] = None, max_tokens: int = 1024) -> str:
+        """Calls Amazon Bedrock model (DeepSeek-R1 / Nova-Lite) for non-streaming structured text generation."""
+        if not self.client:
+            raise RuntimeError("AWS Bedrock client not initialized.")
+
+        messages = [{"role": "user", "content": [{"text": prompt}]}]
+        sys_block = [{"text": system_prompt}] if system_prompt else []
+        
+        response = self.client.converse(
+            modelId=config.bedrock_model_id,
+            system=sys_block,
+            messages=messages,
+            inferenceConfig={"temperature": 0.3, "maxTokens": max_tokens}
+        )
+        
+        output_message = response.get("output", {}).get("message", {})
+        content_blocks = output_message.get("content", [])
+        text_parts = [b.get("text", "") for b in content_blocks if "text" in b]
+        return "".join(text_parts).strip()
+
     def generate_embedding(self, text: str) -> Optional[np.ndarray]:
         """Calls Bedrock Titan Text Embeddings V2 to generate a 512-dim vector."""
         if not self.client:

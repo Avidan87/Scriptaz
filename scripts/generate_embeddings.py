@@ -28,8 +28,13 @@ def embed_single_verse(verse_id: int, text_payload: str) -> Tuple[int, Optional[
     return verse_id, vec
 
 
-def run_embedding_pipeline(limit: Optional[int] = None, theme_filter: Optional[str] = None, concurrency: int = 8):
-    print(f"\n{'='*70}\n[SCRIPTAZ VECTOR EMBEDDING PIPELINE (Bedrock Titan V2)]\n{'='*70}")
+def run_embedding_pipeline(
+    limit: Optional[int] = None,
+    theme_filter: Optional[str] = None,
+    translations: Optional[List[str]] = None,
+    concurrency: int = 12
+):
+    print(f"\n{'='*75}\n[SCRIPTAZ VECTOR EMBEDDING PIPELINE (Bedrock Titan V2)]\n{'='*75}")
     
     if not bedrock_engine.client:
         print("❌ Error: AWS Bedrock client not initialized. Please verify AWS credentials in .env")
@@ -38,12 +43,19 @@ def run_embedding_pipeline(limit: Optional[int] = None, theme_filter: Optional[s
     with db._get_connection() as conn:
         cursor = conn.cursor()
         
-        # Count remaining verses without embeddings
+        # Build query for target verses without embeddings
         query = "SELECT id, reference, translation, text, surrounding_context, theme FROM verses WHERE embedding_blob IS NULL"
         params = []
+        
+        if translations:
+            placeholders = ",".join("?" for _ in translations)
+            query += f" AND translation IN ({placeholders})"
+            params.extend(translations)
+            
         if theme_filter:
             query += " AND theme = ?"
             params.append(theme_filter)
+            
         if limit:
             query += f" LIMIT {limit}"
             
@@ -51,12 +63,14 @@ def run_embedding_pipeline(limit: Optional[int] = None, theme_filter: Optional[s
         rows = cursor.fetchall()
 
     total_to_embed = len(rows)
+    target_trans_str = ", ".join(translations) if translations else "All"
     if total_to_embed == 0:
-        print("✅ All matching verses in SQLite are already embedded! No work needed.")
+        print(f"✅ All matching verses ({target_trans_str}) in SQLite are already embedded! No work needed.")
         return
 
-    print(f"🔄 Found {total_to_embed} verses queued for embedding...")
-    print(f"⚙️ Model: {config.bedrock_embedding_model_id} | Dimensions: 512 | Concurrency: {concurrency}\n")
+    print(f"🎯 Target Translations: {target_trans_str}")
+    print(f"🔄 Queued for Embedding: {total_to_embed:,} verses")
+    print(f"⚙️ Model: {config.bedrock_embedding_model_id} | Dimensions: 512 | Concurrency: {concurrency} workers\n")
 
     batch_size = 50
     completed = 0
@@ -68,8 +82,7 @@ def run_embedding_pipeline(limit: Optional[int] = None, theme_filter: Optional[s
         futures = {}
         for r in rows:
             v_id = r["id"]
-            # Construct rich context payload for Titan V2
-            payload = f"[{r['reference']} - {r['translation']}] Theme: {r['theme']}. Text: {r['text']}. Context: {r['surrounding_context'] or r['text']}"
+            payload = f"[{r['reference']} - {r['translation']}] Theme: {r['theme']}. Verse: {r['text']}. Narrative Context: {r['surrounding_context'] or r['text']}"
             f = executor.submit(embed_single_verse, v_id, payload)
             futures[f] = v_id
 
@@ -94,18 +107,21 @@ def run_embedding_pipeline(limit: Optional[int] = None, theme_filter: Optional[s
             elapsed = time.time() - start_time
             rate = completed / max(1, elapsed)
             percent = (completed / total_to_embed) * 100
-            sys.stdout.write(f"\r🚀 Progress: {completed}/{total_to_embed} ({percent:.1f}%) | Speed: {rate:.1f} verses/sec")
+            sys.stdout.write(f"\r🚀 Progress: {completed:,}/{total_to_embed:,} ({percent:.1f}%) | Speed: {rate:.1f} verses/sec")
             sys.stdout.flush()
 
-    print(f"\n\n🎉 Successfully generated and saved {completed} embeddings to SQLite!")
-    print(f"⏱️ Total time elapsed: {time.time() - start_time:.2f} seconds.\n")
+    total_time = time.time() - start_time
+    print(f"\n\n🎉 Successfully generated and saved {completed:,} embeddings to SQLite!")
+    print(f"⏱️ Total time elapsed: {total_time:.2f} seconds ({completed/max(1, total_time):.1f} verses/sec).\n")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate Bedrock Titan V2 embeddings for Bible verses")
     parser.add_argument("--limit", type=int, default=None, help="Maximum number of verses to embed")
     parser.add_argument("--theme", type=str, default=None, help="Filter by specific theme (e.g. 'Wisdom')")
-    parser.add_argument("--concurrency", type=int, default=8, help="Concurrent AWS Bedrock worker threads")
+    parser.add_argument("--translations", type=str, default="NKJV,NLT", help="Comma-separated translations (e.g. 'NKJV,NLT')")
+    parser.add_argument("--concurrency", type=int, default=12, help="Concurrent AWS Bedrock worker threads")
     args = parser.parse_args()
 
-    run_embedding_pipeline(limit=args.limit, theme_filter=args.theme, concurrency=args.concurrency)
+    trans_list = [t.strip().upper() for t in args.translations.split(",") if t.strip()] if args.translations else None
+    run_embedding_pipeline(limit=args.limit, theme_filter=args.theme, translations=trans_list, concurrency=args.concurrency)

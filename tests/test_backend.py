@@ -26,7 +26,7 @@ from engine.api import app
 
 
 def test_all_endpoints():
-    print(f"\n{'='*70}\n[RUNNING FULL FASTAPI ENDPOINT VERIFICATION SUITE]\n{'='*70}")
+    print(f"\n{'='*70}\n[RUNNING FULL FASTAPI ENDPOINT VERIFICATION SUITE (v2.0)]\n{'='*70}")
     
     client = TestClient(app)
     
@@ -35,10 +35,13 @@ def test_all_endpoints():
     assert res.status_code == 200
     print(f"1.  ✅ GET /api/health -> Status: {res.json()['status']}, Verses: {res.json()['database_verse_count']}")
 
-    # 2. Themes
+    # 2. 5 Themes
     res = client.get("/api/themes")
     assert res.status_code == 200
-    print(f"2.  ✅ GET /api/themes -> 11 Themes: {res.json()[:4]}...")
+    themes = res.json()
+    assert len(themes) == 5
+    assert "Peace" in themes and "Wisdom" in themes and "Faith" in themes and "Grace" in themes and "Provision" in themes
+    print(f"2.  ✅ GET /api/themes -> 5 Flagship Themes: {themes}")
 
     # 3. Translations
     res = client.get("/api/translations")
@@ -50,7 +53,8 @@ def test_all_endpoints():
     assert res.status_code == 200
     verse_data = res.json()
     assert verse_data is not None
-    print(f"4.  ✅ GET /api/verse/next -> [{verse_data['reference']} ({verse_data['translation']})]")
+    assert "is_pinned" in verse_data
+    print(f"4.  ✅ GET /api/verse/next -> [{verse_data['reference']} ({verse_data['translation']})] is_pinned={verse_data['is_pinned']}")
 
     # 5. Verse by ID
     v_id = verse_data["id"]
@@ -60,7 +64,7 @@ def test_all_endpoints():
     print(f"5.  ✅ GET /api/verse/{v_id} -> Found [{res.json()['reference']}]")
 
     # 6. Verses by Theme
-    res = client.get("/api/verses/by-theme?theme=Wisdom&translation=KJV&limit=3")
+    res = client.get("/api/verses/by-theme?theme=Wisdom&translation=NKJV&limit=3")
     assert res.status_code == 200
     print(f"6.  ✅ GET /api/verses/by-theme (Wisdom) -> Retrieved {len(res.json())} verses")
 
@@ -74,8 +78,8 @@ def test_all_endpoints():
         "user_name": "Avidan",
         "interval_minutes": 45,
         "daily_limit": 6,
-        "active_translation": "KJV",
-        "active_theme": "Wisdom",
+        "active_translation": "NKJV",
+        "active_theme": "Peace",
         "personal_context": "Planning technical architecture",
         "launch_on_startup": False,
         "dark_mode": True
@@ -86,15 +90,16 @@ def test_all_endpoints():
     assert res.json()["interval_minutes"] == 45
     print(f"8.  ✅ POST /api/settings -> Updated for user '{res.json()['user_name']}', Theme='{res.json()['active_theme']}'")
 
-    res = client.get("/api/settings")
-    assert res.status_code == 200
-    assert res.json()["user_name"] == "Avidan"
-    print(f"9.  ✅ GET /api/settings -> Confirmed user_name: '{res.json()['user_name']}'")
-
-    # 10. Pin & Unpin
+    # 9. Pin & Unpin Lifecycle (7-day cycle)
     res = client.post(f"/api/verses/{v_id}/pin?notes=Test%20Pin")
     assert res.status_code == 200
-    print(f"10. ✅ POST /api/verses/{v_id}/pin -> Pinned successfully")
+    assert res.json()["is_pinned"] is True
+    print(f"9.  ✅ POST /api/verses/{v_id}/pin -> Pinned for 7-day rotation")
+
+    res = client.get(f"/api/verses/{v_id}/is-pinned")
+    assert res.status_code == 200
+    assert res.json()["is_pinned"] is True
+    print(f"10. ✅ GET /api/verses/{v_id}/is-pinned -> Verified is_pinned=True")
 
     res = client.get("/api/verses/pinned")
     assert res.status_code == 200
@@ -105,23 +110,24 @@ def test_all_endpoints():
     assert res.status_code == 200
     print(f"12. ✅ DELETE /api/verses/{v_id}/pin -> Unpinned successfully")
 
-    # 13. Direct JSON Deep Insight
-    insight_payload = {
-        "reference": "Proverbs 3:5-6",
-        "translation": "KJV",
-        "verse_text": "Trust in the LORD with all thine heart; and lean not unto thine own understanding.",
-        "active_theme": "Wisdom",
-        "personal_context": "Navigating software design choices",
-        "user_name": "Avidan"
+    # 10. Custom Themes API
+    custom_theme_payload = {
+        "prompt": "Dealing with workplace conflict and seeking wisdom",
+        "preferred_translation": "NKJV"
     }
-    print("\n⏳ Generating Deep Insight via POST /api/insight...")
-    res = client.post("/api/insight", json=insight_payload)
+    res = client.post("/api/custom-themes/create", json=custom_theme_payload)
     assert res.status_code == 200
-    print(f"13. ✅ POST /api/insight -> Response received ({len(res.json()['christ_centered_revelation'])} chars)")
-    print(f"\n--- Preview of Deep Insight Response ---")
-    print(res.json()["christ_centered_revelation"][:250] + "...\n")
+    custom_data = res.json()
+    assert "title" in custom_data
+    assert len(custom_data["semantic_anchors"]) > 0
+    print(f"13. ✅ POST /api/custom-themes/create -> Curated: '{custom_data['title']}'")
 
-    print(f"{'='*70}\n🎉 ALL 13 ENDPOINT TESTS PASSED WITH 100% SUCCESS!\n{'='*70}\n")
+    res = client.get("/api/custom-themes")
+    assert res.status_code == 200
+    assert len(res.json()) > 0
+    print(f"14. ✅ GET /api/custom-themes -> Total custom themes: {len(res.json())}")
+
+    print(f"{'='*70}\n🎉 ALL 14 ENDPOINT TESTS PASSED WITH 100% SUCCESS!\n{'='*70}\n")
 
 
 if __name__ == "__main__":

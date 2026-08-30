@@ -16,17 +16,23 @@ class BibleTranslation(str, Enum):
 
 
 class ScriptureTheme(str, Enum):
-    SIN_AND_GRACE = "Sin & Grace"
-    NEW_BIRTH = "New Birth"
-    AUTHORITY = "Authority"
-    FAITH = "Faith"
     PEACE = "Peace"
-    HEALING = "Healing"
     WISDOM = "Wisdom"
-    PROVISION_AND_DILIGENCE = "Provision & Diligence"
-    SALVATION = "Salvation"
-    LOVE = "Love"
-    JOY = "Joy"
+    FAITH = "Faith"
+    GRACE = "Grace"
+    PROVISION = "Provision"
+    CUSTOM = "Custom"
+
+
+class CustomThemeModel(BaseModel):
+    id: Optional[int] = None
+    title: str
+    user_prompt: str
+    theological_summary: Optional[str] = None
+    semantic_anchors: List[str] = Field(default_factory=list)
+    seed_references: List[str] = Field(default_factory=list)
+    is_active: bool = True
+    created_at: Optional[datetime] = None
 
 
 class VerseModel(BaseModel):
@@ -34,10 +40,10 @@ class VerseModel(BaseModel):
     book: str
     chapter: int
     verse: int
-    reference: str  # e.g., "Luke 10:19"
+    reference: str  # e.g., "Luke 10:19" or "Ephesians 1:17-20"
     translation: BibleTranslation = BibleTranslation.KJV
     text: str
-    theme: ScriptureTheme
+    theme: ScriptureTheme = ScriptureTheme.FAITH
     surrounding_context: Optional[str] = None
     key_original_words: Optional[str] = None
     tags: Optional[List[str]] = Field(default_factory=list)
@@ -45,14 +51,24 @@ class VerseModel(BaseModel):
 
 
 class UserSettingsModel(BaseModel):
-    user_name: str = Field(default="Avidan", max_length=50)
+    user_name: str = Field(default="Friend", max_length=50)
     interval_minutes: int = Field(default=60, ge=30, le=120)
     daily_limit: int = Field(default=5, ge=1, le=10)
-    active_translation: BibleTranslation = BibleTranslation.KJV
-    active_theme: ScriptureTheme = ScriptureTheme.SIN_AND_GRACE
+    active_translation: BibleTranslation = BibleTranslation.NKJV
+    active_theme: ScriptureTheme = ScriptureTheme.PEACE
+    active_custom_theme_id: Optional[int] = None
+    active_custom_theme_title: Optional[str] = None
     personal_context: str = Field(default="", max_length=1000)
     launch_on_startup: bool = False
-    dark_mode: bool = True
+    dark_mode: bool = False
+
+    @property
+    def preferred_bible_version(self) -> str:
+        return self.active_translation.value if hasattr(self.active_translation, 'value') else str(self.active_translation)
+
+    @property
+    def personal_struggle_context(self) -> str:
+        return self.personal_context
 
 
 class InsightRequest(BaseModel):
@@ -84,6 +100,8 @@ class PinnedVerseModel(BaseModel):
     text: str
     theme: ScriptureTheme
     pinned_at: datetime
+    days_remaining: int = 7
+    is_active_cycle: bool = True
     notes: Optional[str] = None
 
 

@@ -43,8 +43,8 @@ class AppConfig:
     # Defaults
     default_interval_minutes: int = int(os.getenv("DEFAULT_INTERVAL_MINUTES", "60"))
     default_daily_limit: int = int(os.getenv("DEFAULT_DAILY_LIMIT", "5"))
-    default_bible_version: str = os.getenv("DEFAULT_BIBLE_VERSION", "KJV")
-    default_theme: str = os.getenv("DEFAULT_THEME", "Sin & Grace")
+    default_bible_version: str = os.getenv("DEFAULT_BIBLE_VERSION", "NKJV")
+    default_theme: str = os.getenv("DEFAULT_THEME", "Peace")
 
     # FastAPI Server
     api_host: str = os.getenv("API_HOST", "127.0.0.1")

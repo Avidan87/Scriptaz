@@ -11,23 +11,26 @@ from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
 from typing import Optional, List, Dict, Any
 
+from pydantic import BaseModel, Field
 from core.config import config
 from core.models import (
     VerseModel,
     BibleTranslation,
     ScriptureTheme,
     UserSettingsModel,
+    CustomThemeModel,
     InsightRequest,
     StructuredInsight,
     PinnedVerseModel
 )
 from core.db import db
 from engine.bedrock_engine import bedrock_engine
+from engine.theme_architect import theme_architect
 
 app = FastAPI(
     title="Scriptaz API",
-    description="Intelligent, Context-Sound Scripture Companion API powered by AWS Bedrock & SQLite",
-    version="1.0.0",
+    description="Intelligent Scripture Companion API with 5 Flagship Themes, AI Custom Themes, and 7-Day Pinned Verses Lifecycle",
+    version="2.0.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -42,8 +45,26 @@ app.add_middleware(
 )
 
 
+class CustomThemeCreateRequest(BaseModel):
+    prompt: str = Field(..., min_length=3, max_length=1000, description="User's situation, struggle, or focus in plain text")
+    preferred_translation: BibleTranslation = Field(default=BibleTranslation.NKJV, description="Target translation for vector search")
+
+
+class ExtendedVerseResponse(BaseModel):
+    id: Optional[int] = None
+    book: str
+    chapter: int
+    verse: int
+    reference: str
+    translation: BibleTranslation
+    text: str
+    theme: str
+    is_pinned: bool = False
+    active_theme_display: Optional[str] = None
+
+
 # ----------------------------------------------------------------------
-# 1. System & Health Endpoints
+# 1. System & Metadata Endpoints
 # ----------------------------------------------------------------------
 @app.get("/api/health", summary="System Health Check", tags=["System"])
 def health_check():
@@ -60,10 +81,10 @@ def health_check():
     }
 
 
-@app.get("/api/themes", response_model=List[str], summary="List All 11 Scripture Themes", tags=["Metadata"])
+@app.get("/api/themes", response_model=List[str], summary="List 5 Flagship Scripture Themes", tags=["Metadata"])
 def get_themes():
-    """Returns all 11 curated biblical themes."""
-    return [theme.value for theme in ScriptureTheme]
+    """Returns the 5 single-word flagship themes (Peace, Wisdom, Faith, Grace, Provision)."""
+    return [t.value for t in ScriptureTheme if t != ScriptureTheme.CUSTOM]
 
 
 @app.get("/api/translations", response_model=List[str], summary="List Available Bible Translations", tags=["Metadata"])
@@ -73,26 +94,122 @@ def get_translations():
 
 
 # ----------------------------------------------------------------------
-# 2. Scripture Retrieval & Queue Endpoints
+# 2. Custom Themes Endpoints
 # ----------------------------------------------------------------------
-@app.get("/api/verse/next", response_model=Optional[VerseModel], summary="Get Next Queued Scripture", tags=["Verses"])
+@app.post("/api/custom-themes/create", response_model=CustomThemeModel, summary="Create and Activate AI Custom Theme", tags=["Custom Themes"])
+def create_custom_theme(req: CustomThemeCreateRequest):
+    """
+    Takes user's natural language situation, uses the AI Theological Normalizer to generate title,
+    theological summary, semantic anchors, and seeds, searches SQLite embeddings, and saves/activates it.
+    """
+    theme = theme_architect.curate_custom_theme(
+        user_prompt=req.prompt,
+        preferred_translation=req.preferred_translation.value
+    )
+    return theme
+
+
+@app.get("/api/custom-themes", response_model=List[CustomThemeModel], summary="List All Custom Themes", tags=["Custom Themes"])
+def list_custom_themes():
+    """Returns all saved custom themes created by the user."""
+    return db.get_all_custom_themes()
+
+
+@app.get("/api/custom-themes/active", response_model=Optional[CustomThemeModel], summary="Get Active Custom Theme", tags=["Custom Themes"])
+def get_active_custom_theme():
+    """Returns the currently active custom theme if one is selected."""
+    return db.get_active_custom_theme()
+
+
+@app.post("/api/custom-themes/{theme_id}/activate", summary="Activate a Saved Custom Theme", tags=["Custom Themes"])
+def activate_custom_theme(theme_id: int = FastPath(..., description="ID of custom theme to activate")):
+    """Sets a specific saved custom theme as the active theme for the user."""
+    success = db.activate_custom_theme(theme_id)
+    if not success:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Custom theme {theme_id} not found")
+    return {"status": "success", "message": f"Custom theme {theme_id} activated"}
+
+
+# ----------------------------------------------------------------------
+# 3. Scripture Retrieval & Dynamic Stream Endpoints
+# ----------------------------------------------------------------------
+@app.get("/api/verse/next", response_model=Optional[ExtendedVerseResponse], summary="Get Next Dynamic Scripture", tags=["Verses"])
 def get_next_verse():
-    """Retrieves the next active workday scripture based on theme, daily limit, and sequence queue."""
+    """
+    Retrieves the next active scripture:
+    1. Checks if an active 7-day pinned daily anchor should be served today.
+    2. If active theme is Custom, pulls next unshown verse from the custom theme vector stream.
+    3. If active theme is standard (Peace, Wisdom, Faith, Grace, Provision), pulls next unshown verse.
+    """
+    settings = db.get_settings()
+    is_pinned = False
+    display_theme = settings.active_theme.value
+    
+    # 1. Custom Theme Stream
+    if settings.active_theme == ScriptureTheme.CUSTOM:
+        active_custom = db.get_active_custom_theme()
+        if active_custom:
+            display_theme = active_custom.title
+            verse = theme_architect.get_next_custom_theme_verse(
+                theme=active_custom,
+                translation=settings.active_translation.value
+            )
+            if verse:
+                is_pinned = db.is_verse_pinned(verse.id) if verse.id else False
+                return ExtendedVerseResponse(
+                    id=verse.id,
+                    book=verse.book,
+                    chapter=verse.chapter,
+                    verse=verse.verse,
+                    reference=verse.reference,
+                    translation=verse.translation,
+                    text=verse.text,
+                    theme=display_theme,
+                    is_pinned=is_pinned,
+                    active_theme_display=display_theme
+                )
+
+    # 2. Standard Theme Queue
     verse = db.get_next_queue_verse()
     if not verse:
-        settings = db.get_settings()
         verses = db.get_verses_by_theme(settings.active_theme.value, settings.active_translation.value)
-        return verses[0] if verses else None
-    return verse
+        verse = verses[0] if verses else None
+
+    if verse:
+        is_pinned = db.is_verse_pinned(verse.id) if verse.id else False
+        return ExtendedVerseResponse(
+            id=verse.id,
+            book=verse.book,
+            chapter=verse.chapter,
+            verse=verse.verse,
+            reference=verse.reference,
+            translation=verse.translation,
+            text=verse.text,
+            theme=display_theme,
+            is_pinned=is_pinned,
+            active_theme_display=display_theme
+        )
+    return None
 
 
-@app.get("/api/verse/{verse_id}", response_model=VerseModel, summary="Get Verse by ID", tags=["Verses"])
+@app.get("/api/verse/{verse_id}", response_model=ExtendedVerseResponse, summary="Get Verse by ID", tags=["Verses"])
 def get_verse_by_id(verse_id: int = FastPath(..., description="ID of the verse")):
     """Retrieves a specific verse by its unique integer ID."""
     verse = db.get_verse_by_id(verse_id)
     if not verse:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Verse with ID {verse_id} not found")
-    return verse
+    is_pinned = db.is_verse_pinned(verse_id)
+    return ExtendedVerseResponse(
+        id=verse.id,
+        book=verse.book,
+        chapter=verse.chapter,
+        verse=verse.verse,
+        reference=verse.reference,
+        translation=verse.translation,
+        text=verse.text,
+        theme=verse.theme.value if hasattr(verse.theme, 'value') else str(verse.theme),
+        is_pinned=is_pinned
+    )
 
 
 @app.get("/api/verses/by-theme", response_model=List[VerseModel], summary="Get Verses by Theme", tags=["Verses"])
@@ -118,62 +235,12 @@ def get_verse_translations(reference: str = FastPath(..., description="Scripture
     }
 
 
-@app.get("/api/verses/search", response_model=List[VerseModel], summary="Semantic Vector Search", tags=["Verses"])
-def search_verses(
-    q: str = Query(..., description="Search query, personal struggle, or topic"),
-    theme: Optional[str] = Query(None, description="Optional theme filter"),
-    translation: BibleTranslation = Query(BibleTranslation.KJV, description="Bible translation"),
-    limit: int = Query(5, ge=1, le=20, description="Max results")
-):
-    """Searches verses semantically using Bedrock Titan V2 cosine similarity matching."""
-    return bedrock_engine.search_similar_verses(
-        query_text=q,
-        theme=theme,
-        translation=translation.value,
-        top_k=limit
-    )
-
-
-# ----------------------------------------------------------------------
-# 3. Deep Insight Endpoints (Streaming SSE & Direct JSON)
-# ----------------------------------------------------------------------
-@app.post("/api/insight/stream", summary="Stream Deep Insight (SSE)", tags=["Deep Insights"])
-async def stream_deep_insight(request: InsightRequest):
-    """
-    Streams DeepSeek-R1 Christ-centered illumination token-by-token over Server-Sent Events (SSE).
-    Checks SQLite cache first for 0ms, $0-cost instant hits.
-    """
-    async def event_generator():
-        async for chunk in bedrock_engine.stream_insight(request):
-            yield {
-                "event": "insight_chunk",
-                "data": json.dumps(chunk)
-            }
-
-    return EventSourceResponse(event_generator())
-
-
-@app.post("/api/insight", response_model=StructuredInsight, summary="Get Deep Insight (Direct JSON)", tags=["Deep Insights"])
-async def get_direct_insight(request: InsightRequest):
-    """Generates or retrieves cached Deep Insight, returning the complete structured result in a single JSON response."""
-    final_insight = None
-    async for chunk in bedrock_engine.stream_insight(request):
-        if chunk.get("type") in ("complete", "cached", "fallback"):
-            data = chunk.get("insight", {})
-            final_insight = StructuredInsight(**data)
-            break
-    
-    if not final_insight:
-        final_insight = bedrock_engine._generate_local_fallback(request)
-    return final_insight
-
-
 # ----------------------------------------------------------------------
 # 4. User Settings & Preferences Endpoints
 # ----------------------------------------------------------------------
 @app.get("/api/settings", response_model=UserSettingsModel, summary="Get User Settings", tags=["Settings"])
 def get_user_settings():
-    """Returns the user's current preferences (user name, interval, daily limit, theme, struggle context)."""
+    """Returns the user's current preferences."""
     return db.get_settings()
 
 
@@ -185,33 +252,40 @@ def update_user_settings(settings: UserSettingsModel):
 
 
 # ----------------------------------------------------------------------
-# 5. Pinned Verses ("My Verses") Endpoints
+# 5. Pinned Verses: 7-Day Cycle & Permanent Memory Archive
 # ----------------------------------------------------------------------
 @app.get("/api/verses/pinned", response_model=List[PinnedVerseModel], summary="List All Pinned Verses", tags=["Pinned Verses"])
-def list_pinned_verses():
-    """Returns the user's saved 'My Verses' archive."""
-    return db.get_pinned_verses()
+def list_pinned_verses(active_cycle_only: bool = Query(False, description="Filter for 7-day active cycle only")):
+    """Returns the user's saved 'My Verses' archive (or active 7-day cycle if filtered)."""
+    if active_cycle_only:
+        return db.get_active_pinned_verses()
+    return db.get_pinned_archive()
 
 
-@app.post("/api/verses/{verse_id}/pin", summary="Pin a Verse into Rotation", tags=["Pinned Verses"])
+@app.post("/api/verses/{verse_id}/pin", summary="Pin a Verse (Start 7-Day Cycle)", tags=["Pinned Verses"])
 def pin_verse(
     verse_id: int = FastPath(..., description="Verse ID to pin"),
     notes: Optional[str] = Query(None, description="Optional personal reflection note")
 ):
-    """Pins a verse into active workday rotation and saves it in the archive."""
+    """Pins a verse into active 7-day rotation and saves it permanently in the archive."""
     success = db.pin_verse(verse_id, notes)
     if not success:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Verse not found")
-    return {"status": "success", "message": f"Verse {verse_id} pinned successfully", "verse_id": verse_id}
+    return {"status": "success", "message": f"Verse {verse_id} pinned for 7-day rotation", "verse_id": verse_id, "is_pinned": True}
 
 
+@app.post("/api/verses/{verse_id}/unpin", summary="Unpin a Verse", tags=["Pinned Verses"])
 @app.delete("/api/verses/{verse_id}/pin", summary="Unpin a Verse", tags=["Pinned Verses"])
 def unpin_verse(verse_id: int = FastPath(..., description="Verse ID to unpin")):
-    """Removes a verse from pinned rotation."""
+    """Removes a verse from pinned rotation and archive."""
     success = db.unpin_verse(verse_id)
-    if not success:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Verse was not pinned")
-    return {"status": "success", "message": f"Verse {verse_id} unpinned successfully", "verse_id": verse_id}
+    return {"status": "success", "message": f"Verse {verse_id} unpinned", "verse_id": verse_id, "is_pinned": False}
+
+
+@app.get("/api/verses/{verse_id}/is-pinned", summary="Check if Verse is Pinned", tags=["Pinned Verses"])
+def check_is_pinned(verse_id: int = FastPath(..., description="Verse ID")):
+    """Returns whether a specific verse is currently pinned."""
+    return {"verse_id": verse_id, "is_pinned": db.is_verse_pinned(verse_id)}
 
 
 def run_server():
@@ -222,3 +296,4 @@ def run_server():
 
 if __name__ == "__main__":
     run_server()
+
