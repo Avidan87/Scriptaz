@@ -596,10 +596,13 @@ class HowItWorksDialog(QDialog):
     Explains the vision, workflow, and core pillars of Scriptaz with modern visual cards.
     Fully adaptive to Light and Dark modes.
     """
-    def __init__(self, is_dark: bool = True, parent=None):
+    def __init__(self, is_dark: bool = True, is_onboarding: bool = False, parent=None):
         super().__init__(parent)
         self.is_dark = is_dark
-        self.setWindowTitle("About Scriptaz — How It Works")
+        self.settings = db.get_user_settings()
+        self.is_existing_user = self.settings.has_completed_onboarding and not is_onboarding
+        title_text = "About Scriptaz — How It Works" if self.is_existing_user else "Welcome to Scriptaz — How It Works"
+        self.setWindowTitle(title_text)
         self.setFixedSize(620, 640)
         self.setObjectName("ControlPanelWindow")
         self.setWindowFlags(Qt.Window)
@@ -627,7 +630,8 @@ class HowItWorksDialog(QDialog):
 
         hero_text = QVBoxLayout()
         hero_text.setSpacing(4)
-        title = QLabel("Welcome to Scriptaz")
+        hero_title_text = "How Scriptaz Works" if self.is_existing_user else "Welcome to Scriptaz"
+        title = QLabel(hero_title_text)
         title.setStyleSheet(f"font-size: 20px; font-weight: 800; color: {c['text_primary']}; background: transparent;")
         subtitle = QLabel("God's Living Word for Your Active Workday")
         subtitle.setStyleSheet(f"font-size: 13px; font-weight: 600; color: {accent}; background: transparent;")
@@ -712,11 +716,12 @@ class HowItWorksDialog(QDialog):
         footer.addWidget(privacy_lbl)
         footer.addStretch()
 
-        got_it_btn = QPushButton("Got It, Let's Begin →")
-        got_it_btn.setObjectName("PrimaryBtn")
-        got_it_btn.setCursor(QCursor(Qt.PointingHandCursor))
-        got_it_btn.clicked.connect(self.accept)
-        footer.addWidget(got_it_btn)
+        btn_text = "Done" if self.is_existing_user else "Got It, Let's Begin →"
+        action_btn = QPushButton(btn_text)
+        action_btn.setObjectName("PrimaryBtn")
+        action_btn.setCursor(QCursor(Qt.PointingHandCursor))
+        action_btn.clicked.connect(self.accept)
+        footer.addWidget(action_btn)
 
         layout.addLayout(footer)
 

@@ -98,11 +98,7 @@ class ScriptazTrayApp(QSystemTrayIcon):
         self.tray_menu.addAction(self.status_action)
         self.tray_menu.addSeparator()
 
-        # 2. Quick Actions
-        self.trigger_action = QAction("⚡ Show Scripture Now", self.tray_menu)
-        self.trigger_action.triggered.connect(self._on_trigger_now)
-        self.tray_menu.addAction(self.trigger_action)
-
+        # 2. Main Navigation Actions
         self.settings_action = QAction("⚙️ Control Panel & Preferences", self.tray_menu)
         self.settings_action.triggered.connect(self._open_control_panel)
         self.tray_menu.addAction(self.settings_action)
