@@ -24,21 +24,37 @@ from resources.styles import THEMES
 ICONS_DIR = Path(__file__).resolve().parent.parent / "resources" / "icons"
 
 
+def format_countdown(seconds: int) -> str:
+    """Formats remaining seconds into a crisp human countdown string."""
+    if seconds <= 0:
+        return "momentarily"
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    secs = seconds % 60
+    if hours > 0:
+        return f"{hours}h {minutes:02d}m {secs:02d}s"
+    elif minutes > 0:
+        return f"{minutes}m {secs:02d}s"
+    else:
+        return f"{secs}s"
+
+
 class ScriptazTrayApp(QSystemTrayIcon):
     """
-    Main System Tray / Menu Bar Daemon for Scriptaz.
-    Runs quietly in macOS Menu Bar and Windows System Tray.
+    Native macOS & Windows Menu Bar System Tray Application.
+    Houses the persistent background cycle, menu actions, and scheduler coordinator.
     """
     def __init__(self, app: QApplication, parent=None):
         super().__init__(parent)
         self.app = app
         self.active_popup: Optional[ScripturePopupCard] = None
         self.settings_dialog: Optional[SettingsDialog] = None
-        self.current_status = {}
+        self.current_status: dict = {}
 
         self._init_tray_icon()
         self._init_menu()
         self._connect_signals()
+        scheduler.start()
 
     def _init_tray_icon(self):
         tray_icon = get_tray_icon()
@@ -74,9 +90,10 @@ class ScriptazTrayApp(QSystemTrayIcon):
                 margin: 4px 8px;
             }}
         """)
+        self.tray_menu.aboutToShow.connect(self._on_menu_about_to_show)
 
         # 1. Status Indicator Header
-        self.status_action = QAction("● Active Rhythm: Starting up...", self.tray_menu)
+        self.status_action = QAction("● Active: Calculating countdown...", self.tray_menu)
         self.status_action.setEnabled(False)
         self.tray_menu.addAction(self.status_action)
         self.tray_menu.addSeparator()
@@ -118,18 +135,32 @@ class ScriptazTrayApp(QSystemTrayIcon):
         scheduler.verse_trigger_signal.connect(self._display_scripture_card)
         scheduler.status_updated_signal.connect(self._on_status_updated)
 
+    def _on_menu_about_to_show(self):
+        """Immediately refreshes the live countdown before menu displays."""
+        curr = scheduler.get_current_status()
+        self._on_status_updated(curr)
+
     def _on_status_updated(self, status: dict):
         self.current_status = status
         state = status.get("state", "Active")
-        rem = status.get("remaining_minutes", 0)
+        rem_sec = status.get("remaining_seconds", 0)
         delivered = status.get("verses_delivered_today", 0)
         limit = status.get("daily_limit", 5)
+        is_paused = status.get("is_paused", False)
+        is_idle = status.get("is_idle", False)
+        cycle = status.get("current_cycle", 1)
 
-        if status.get("is_paused"):
-            self.status_action.setText("⏸️ Tracking Paused")
+        countdown = format_countdown(rem_sec)
+        progress = f"{delivered}/{limit} today" if cycle == 1 else f"{delivered}/{limit} • Cycle {cycle}"
+
+        if is_paused:
+            self.status_action.setText(f"⏸ Paused: Next verse in {countdown} ({progress})")
             self.pause_action.setText("▶️ Resume Workday Tracking")
+        elif is_idle:
+            self.status_action.setText(f"🌙 Away: Next verse in {countdown} (paused while away)")
+            self.pause_action.setText("⏸️ Pause Workday Tracking")
         else:
-            self.status_action.setText(f"● {state}: Next verse in ~{rem}m ({delivered}/{limit} today)")
+            self.status_action.setText(f"● Active: Next verse in {countdown} ({progress})")
             self.pause_action.setText("⏸️ Pause Workday Tracking")
 
     def _display_scripture_card(self, verse_data: dict):

@@ -412,7 +412,8 @@ class DatabaseManager:
                 personal_context=rows.get("personal_context", ""),
                 launch_on_startup=rows.get("launch_on_startup", "false").lower() == "true",
                 dark_mode=rows.get("dark_mode", "false").lower() == "true",
-                has_completed_onboarding=rows.get("has_completed_onboarding", "false").lower() == "true"
+                has_completed_onboarding=rows.get("has_completed_onboarding", "false").lower() == "true",
+                run_in_background=rows.get("run_in_background", "true").lower() == "true"
             )
 
     def get_user_settings(self) -> UserSettingsModel:
@@ -435,7 +436,8 @@ class DatabaseManager:
                 "personal_context": settings.personal_context,
                 "launch_on_startup": str(settings.launch_on_startup).lower(),
                 "dark_mode": str(settings.dark_mode).lower(),
-                "has_completed_onboarding": str(settings.has_completed_onboarding).lower()
+                "has_completed_onboarding": str(settings.has_completed_onboarding).lower(),
+                "run_in_background": str(settings.run_in_background).lower()
             }
             for k, v in settings_dict.items():
                 cursor.execute(
@@ -502,6 +504,24 @@ class DatabaseManager:
                 created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None
             )
 
+    def get_custom_theme(self, theme_id: int) -> Optional[CustomThemeModel]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM custom_themes WHERE id = ? LIMIT 1", (theme_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return CustomThemeModel(
+                id=row["id"],
+                title=row["title"],
+                user_prompt=row["user_prompt"],
+                theological_summary=row["theological_summary"],
+                semantic_anchors=json.loads(row["semantic_anchors"]) if row["semantic_anchors"] else [],
+                seed_references=json.loads(row["seed_references"]) if row["seed_references"] else [],
+                is_active=bool(row["is_active"]),
+                created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None
+            )
+
     def get_all_custom_themes(self) -> List[CustomThemeModel]:
         with self._get_connection() as conn:
             cursor = conn.cursor()
@@ -537,6 +557,20 @@ class DatabaseManager:
             )
             conn.commit()
             return True
+
+    def delete_custom_theme(self, theme_id: int) -> bool:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT value FROM user_settings WHERE key = 'active_custom_theme_id'")
+            row = cursor.fetchone()
+            if row and row["value"] == str(theme_id):
+                cursor.execute("UPDATE user_settings SET value = 'Peace' WHERE key = 'active_theme'")
+                cursor.execute("UPDATE user_settings SET value = '' WHERE key = 'active_custom_theme_id'")
+                cursor.execute("UPDATE user_settings SET value = '' WHERE key = 'active_custom_theme_title'")
+            cursor.execute("DELETE FROM custom_themes WHERE id = ?", (theme_id,))
+            cursor.execute("DELETE FROM custom_theme_history WHERE theme_id = ?", (theme_id,))
+            conn.commit()
+            return cursor.rowcount > 0
 
     def record_custom_theme_shown(self, theme_id: int, verse_id: int):
         with self._get_connection() as conn:
@@ -678,43 +712,118 @@ class DatabaseManager:
                 conn.commit()
                 return self._row_to_verse(row)
 
-            cursor.execute("SELECT COUNT(*) as count FROM active_queue WHERE day_date = ?", (today_str,))
-            shown_today_count = cursor.fetchone()["count"]
+            # 2. Get all verses shown today to avoid repeating recently shown verses
+            cursor.execute("SELECT verse_id FROM active_queue WHERE day_date = ?", (today_str,))
+            already_shown_today = [r["verse_id"] for r in cursor.fetchall()]
+            shown_today_count = len(already_shown_today)
+            already_shown_set = set(already_shown_today)
 
-            if shown_today_count >= settings.daily_limit:
-                pinned = self.get_pinned_verses()
-                if pinned:
-                    first_pinned = self.get_verse_by_id(pinned[0].verse_id)
-                    if first_pinned:
-                        return first_pinned
+            # 3. Pull pool of candidate verses for active theme & translation
+            candidates = []
+
+            # Check if active theme is Custom
+            is_custom = (settings.active_theme == ScriptureTheme.CUSTOM or str(settings.active_theme.value).lower() == "custom")
+            if is_custom and settings.active_custom_theme_id:
+                ct = self.get_custom_theme(settings.active_custom_theme_id)
+                if ct:
+                    # A. Seed references
+                    if ct.seed_references:
+                        for ref in ct.seed_references:
+                            cursor.execute(
+                                "SELECT * FROM verses WHERE reference = ? AND translation = ? LIMIT 1",
+                                (ref, settings.active_translation.value)
+                            )
+                            r = cursor.fetchone()
+                            if r:
+                                candidates.append(self._row_to_verse(r))
+
+                    # B. Dynamic vector search for custom theme anchors
+                    if ct.semantic_anchors:
+                        from engine.theme_architect import theme_architect
+                        for anchor in ct.semantic_anchors[:3]:
+                            matches = theme_architect.vector_search_verses(
+                                anchor,
+                                translation=settings.active_translation.value,
+                                top_k=8,
+                                min_similarity=0.36
+                            )
+                            for v_id, score in matches:
+                                if v_id not in [c.id for c in candidates]:
+                                    v_match = self.get_verse_by_id(v_id)
+                                    if v_match:
+                                        candidates.append(v_match)
+
+            if not candidates:
+                theme_str = settings.active_theme.value if hasattr(settings.active_theme, 'value') else str(settings.active_theme)
+                
+                # Query precomputed semantic theme index
+                cursor.execute("""
+                    SELECT v.*, s.score
+                    FROM theme_semantic_index s
+                    JOIN verses v ON s.verse_id = v.id
+                    WHERE s.theme = ? AND v.translation = ?
+                    ORDER BY s.score DESC
+                    LIMIT 200
+                """, (theme_str, settings.active_translation.value))
+                rows = cursor.fetchall()
+                
+                if rows:
+                    candidates = [self._row_to_verse(r) for r in rows]
+                else:
+                    cursor.execute(
+                        "SELECT * FROM verses WHERE (theme = ? OR tags LIKE ?) AND translation = ? ORDER BY id ASC LIMIT 50",
+                        (theme_str, f"%{theme_str}%", settings.active_translation.value)
+                    )
+                    rows = cursor.fetchall()
+                    candidates = [self._row_to_verse(r) for r in rows]
+
+            if not candidates:
                 return None
 
-            verses = self.get_verses_by_theme(settings.active_theme.value, settings.active_translation.value)
-            if not verses:
-                cursor.execute("SELECT * FROM verses WHERE translation = ? LIMIT 10", (settings.active_translation.value,))
-                rows = cursor.fetchall()
-                verses = [self._row_to_verse(r) for r in rows]
-                if not verses:
-                    return None
+            # 4. Filter out verses already shown today
+            unshown = [v for v in candidates if v.id not in already_shown_set]
 
-            cursor.execute("SELECT verse_id FROM active_queue WHERE day_date = ?", (today_str,))
-            already_queued_ids = {r["verse_id"] for r in cursor.fetchall()}
+            # Optional: Sub-topic biasing if personal_context provided
+            if unshown and settings.personal_context and settings.personal_context.strip():
+                try:
+                    from engine.bedrock_engine import bedrock_engine
+                    import numpy as np
+                    ctx_vec = bedrock_engine.generate_embedding(settings.personal_context.strip())
+                    if ctx_vec is not None:
+                        # Rank unshown candidates by context alignment
+                        q_norm = ctx_vec / max(1e-10, np.linalg.norm(ctx_vec))
+                        unshown_scores = []
+                        for v in unshown[:30]:
+                            cursor.execute("SELECT embedding_blob FROM verses WHERE id = ?", (v.id,))
+                            erow = cursor.fetchone()
+                            if erow and erow["embedding_blob"]:
+                                vec = np.frombuffer(erow["embedding_blob"], dtype=np.float32)
+                                v_norm = vec / max(1e-10, np.linalg.norm(vec))
+                                sim = float(np.dot(v_norm, q_norm))
+                                unshown_scores.append((v, sim))
+                            else:
+                                unshown_scores.append((v, 0.0))
+                        unshown_scores.sort(key=lambda x: x[1], reverse=True)
+                        unshown = [x[0] for x in unshown_scores]
+                except Exception:
+                    pass
 
-            for idx, verse in enumerate(verses):
-                if verse.id not in already_queued_ids:
-                    cursor.execute("""
-                        INSERT INTO active_queue (day_date, verse_id, sequence_order, is_shown, shown_at)
-                        VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP)
-                    """, (today_str, verse.id, shown_today_count + 1))
-                    conn.commit()
-                    return verse
+            if unshown:
+                chosen_verse = unshown[0]
+            else:
+                last_shown_id = already_shown_today[-1] if already_shown_today else None
+                fallback_pool = [v for v in candidates if v.id != last_shown_id] or candidates
+                import random
+                chosen_verse = random.choice(fallback_pool)
 
+            # 5. Insert into active_queue and mark shown
             cursor.execute("""
                 INSERT INTO active_queue (day_date, verse_id, sequence_order, is_shown, shown_at)
                 VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP)
-            """, (today_str, verses[0].id, shown_today_count + 1))
+            """, (today_str, chosen_verse.id, shown_today_count + 1))
             conn.commit()
-            return verses[0]
+
+            return chosen_verse
 
     def _row_to_verse(self, row: sqlite3.Row) -> VerseModel:
         tags_raw = row["tags"] if "tags" in row.keys() else "[]"
@@ -740,12 +849,19 @@ class DatabaseManager:
         """
         verse = self.get_next_queue_verse()
         if verse:
+            settings = self.get_user_settings()
+            is_custom = (settings.active_theme == ScriptureTheme.CUSTOM or str(settings.active_theme.value).lower() == "custom")
+            if is_custom and settings.active_custom_theme_title:
+                active_theme_label = settings.active_custom_theme_title
+            else:
+                active_theme_label = settings.active_theme.value if hasattr(settings.active_theme, 'value') else str(settings.active_theme)
+
             return {
                 "id": verse.id,
                 "reference": verse.reference,
                 "translation": verse.translation.value if hasattr(verse.translation, 'value') else str(verse.translation),
                 "text": verse.text,
-                "theme": verse.theme.value if hasattr(verse.theme, 'value') else str(verse.theme),
+                "theme": active_theme_label,
                 "book": verse.book,
                 "chapter": verse.chapter,
                 "verse": verse.verse,

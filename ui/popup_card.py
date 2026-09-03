@@ -15,13 +15,33 @@ from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QColor, QScreen, QCursor, QIcon
 
 from core.db import db
-from core.models import UserSettingsModel, BibleTranslation
+from core.models import UserSettingsModel, BibleTranslation, ScriptureTheme
 from resources.styles import get_popup_qss, format_scripture_html, THEMES
 from resources.icons import get_svg_icon
+from services.macos_dock import set_dock_icon_visible, make_window_stay_on_top_all_spaces
 
 CARD_WIDTH = 640
 CARD_HEIGHT = 360
 TRANSLATIONS = ["KJV", "NKJV", "ESV", "NLT"]
+
+
+def format_theme_badge_text(title: str, max_chars: int = 24) -> str:
+    """
+    Intelligently truncates theme titles at clean word boundaries
+    without chopping words in half, and strips hanging conjunctions.
+    """
+    title = title.strip()
+    if len(title) <= max_chars:
+        return title.upper()
+    truncated = title[:max_chars].rsplit(" ", 1)[0]
+    if not truncated:
+        truncated = title[:max_chars]
+    hanging = ["AND", "OR", "OF", "IN", "THE", "FOR", "WITH", "A", "AN", "&"]
+    words = truncated.split()
+    while words and words[-1].upper() in hanging:
+        words.pop()
+    clean = " ".join(words).rstrip(" ,.-:;")
+    return (clean.upper() if clean else truncated.upper()) + "..."
 
 
 class ScripturePopupCard(QWidget):
@@ -46,7 +66,20 @@ class ScripturePopupCard(QWidget):
         self.resize(CARD_WIDTH, CARD_HEIGHT)
         self.setMinimumSize(540, 300)
         self.setStyleSheet(get_popup_qss(self.is_dark))
-        self.setWindowFlags(Qt.Window)
+        self.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self.settings.run_in_background:
+            set_dock_icon_visible(True)
+        make_window_stay_on_top_all_spaces(int(self.winId()))
+        self.raise_()
+        self.activateWindow()
+
+    def closeEvent(self, event):
+        super().closeEvent(event)
+        if self.settings.run_in_background:
+            set_dock_icon_visible(False)
 
     def _center_on_screen(self):
         screen = QApplication.primaryScreen()
@@ -68,9 +101,18 @@ class ScripturePopupCard(QWidget):
         header.setSpacing(8)
 
         # Theme Badge
-        raw_theme = self.verse_data.get("theme", "Peace")
-        theme_title = raw_theme.upper() if len(raw_theme) <= 24 else raw_theme[:22].upper() + "..."
-        self.theme_badge = QLabel(f"{theme_title}")
+        raw_theme = self.verse_data.get("theme", "")
+        is_custom = (self.settings.active_theme == ScriptureTheme.CUSTOM or str(self.settings.active_theme.value).lower() == "custom")
+        if is_custom and self.settings.active_custom_theme_title:
+            full_theme_title = self.settings.active_custom_theme_title
+        elif raw_theme:
+            full_theme_title = raw_theme
+        else:
+            full_theme_title = self.settings.active_theme.value if hasattr(self.settings.active_theme, 'value') else str(self.settings.active_theme)
+
+        badge_text = format_theme_badge_text(full_theme_title, max_chars=24)
+        self.theme_badge = QLabel(badge_text)
+        self.theme_badge.setToolTip(full_theme_title)
         self.theme_badge.setObjectName("ThemeBadge")
         header.addWidget(self.theme_badge)
 
@@ -94,6 +136,9 @@ class ScripturePopupCard(QWidget):
         self.text_browser.setObjectName("ScriptureText")
         self.text_browser.setOpenExternalLinks(False)
         self.text_browser.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.text_browser.viewport().setStyleSheet("background: transparent;")
+        c = THEMES["dark"] if self.is_dark else THEMES["light"]
+        self.text_browser.setStyleSheet(f"background: transparent; border: none; color: {c['text_primary']};")
         self._update_scripture_html()
         card_layout.addWidget(self.text_browser, 1)
 
@@ -123,7 +168,20 @@ class ScripturePopupCard(QWidget):
 
         action_row.addStretch()
 
+        # Dismiss Button
+        self.dismiss_btn = QPushButton("Dismiss")
+        self.dismiss_btn.setObjectName("DismissBtn")
+        self.dismiss_btn.setCursor(QCursor(Qt.PointingHandCursor))
+        self.dismiss_btn.clicked.connect(self.close)
+        action_row.addWidget(self.dismiss_btn)
+
         card_layout.addLayout(action_row)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self.close()
+        else:
+            super().keyPressEvent(event)
 
     def _update_scripture_html(self):
         text = self.verse_data.get("text", "")
@@ -144,7 +202,9 @@ class ScripturePopupCard(QWidget):
             self.pin_btn.setObjectName("PinButton")
             self.pin_btn.setIcon(get_svg_icon("pin", color=muted_color, size=15))
         
-        self.pin_btn.setStyle(self.pin_btn.style())
+        self.pin_btn.style().unpolish(self.pin_btn)
+        self.pin_btn.style().polish(self.pin_btn)
+        self.pin_btn.update()
 
     def _toggle_pin(self):
         if not self.verse_id:
@@ -173,3 +233,15 @@ class ScripturePopupCard(QWidget):
             self.trans_badge.setText(self.current_trans)
             self.cycle_trans_btn.setText(f" {self.current_trans}")
             self._update_scripture_html()
+
+        # Update verse_id for new translation and sync pinned state
+        with db._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM verses WHERE reference = ? AND translation = ? LIMIT 1", (ref, self.current_trans))
+            row = cursor.fetchone()
+            if row:
+                self.verse_id = row["id"]
+                self.verse_data["id"] = self.verse_id
+
+        self.is_pinned = db.is_verse_pinned(self.verse_id) if self.verse_id else False
+        self._update_pin_ui()

@@ -62,6 +62,7 @@ class UserSettingsModel(BaseModel):
     launch_on_startup: bool = False
     dark_mode: bool = False
     has_completed_onboarding: bool = False
+    run_in_background: bool = True
 
     @property
     def preferred_bible_version(self) -> str:

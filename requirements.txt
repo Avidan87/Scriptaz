@@ -21,3 +21,5 @@ pypdf>=4.0.0
 pyinstaller>=6.0.0
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
+pyobjc-framework-Cocoa>=11.0
+

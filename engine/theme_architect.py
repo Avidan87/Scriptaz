@@ -55,6 +55,9 @@ class ThemeArchitect:
 
     def __init__(self):
         self.bedrock = bedrock_engine
+        self._cached_trans = None
+        self._cached_ids = None
+        self._cached_matrix = None
 
     def normalize_theme_prompt(self, user_prompt: str) -> Dict[str, Any]:
         """Calls Bedrock (DeepSeek-R1 / Nova-Lite) to normalize a user prompt into structured biblical anchors."""
@@ -69,44 +72,63 @@ class ThemeArchitect:
         prompt = f"User situation / focus:\n\"{user_prompt.strip()}\"\n\nGenerate the structured JSON biblical theme blueprint."
         
         try:
-            raw_response = self.bedrock.generate_text(prompt=prompt, system_prompt=SYSTEM_PROMPT, max_tokens=1000)
-            clean_json = raw_response.strip()
-            if clean_json.startswith("```json"):
-                clean_json = clean_json[7:]
-            if clean_json.startswith("```"):
-                clean_json = clean_json[3:]
-            if clean_json.endswith("```"):
-                clean_json = clean_json[:-3]
+            raw_response = self.bedrock.generate_text(prompt=prompt, system_prompt=SYSTEM_PROMPT, max_tokens=1500)
+            text = raw_response.strip()
+
+            # 1. Strip DeepSeek-R1 reasoning think tags if present
+            if "<think>" in text and "</think>" in text:
+                text = text.split("</think>", 1)[-1].strip()
+
+            # 2. Extract markdown code block if present
+            if "```json" in text:
+                text = text.split("```json", 1)[1].split("```", 1)[0].strip()
+            elif "```" in text:
+                text = text.split("```", 1)[1].split("```", 1)[0].strip()
+
+            # 3. Find JSON bracket boundaries
+            start_idx = text.find("{")
+            end_idx = text.rfind("}")
+            if start_idx != -1 and end_idx != -1:
+                text = text[start_idx:end_idx + 1]
+
+            data = json.loads(text.strip())
             
-            data = json.loads(clean_json.strip())
+            # Ensure mandatory fields are present and dignified
+            if not data.get("theme_title") or len(data["theme_title"].strip()) < 3:
+                data["theme_title"] = "Biblical Focus: " + user_prompt.strip()[:30].title()
+            if not data.get("theological_summary"):
+                data["theological_summary"] = f"God's sovereign wisdom and peace for {user_prompt.strip()}."
+            if not data.get("semantic_anchors"):
+                data["semantic_anchors"] = ["peace of God", "trusting the Lord", "strength and courage"]
+            if not data.get("seed_references"):
+                data["seed_references"] = ["Philippians 4:6-7", "Proverbs 3:5-6", "Joshua 1:9"]
+
             return data
         except Exception as e:
             logger.warning(f"AI normalizer fallback triggered: {e}")
-            # Graceful local fallback if offline
-            clean_title = user_prompt.strip().capitalize()[:40]
+            
+            # Intelligent offline theological normalization
+            words = [w.strip() for w in user_prompt.strip().split() if len(w.strip()) > 3][:4]
+            title_core = " & ".join(words).title() if words else "Workday Guidance"
+            dignified_title = f"Steadfast Faith: {title_core}"
+            
             return {
-                "theme_title": clean_title,
-                "theological_summary": f"God's eternal wisdom and guidance for {user_prompt.strip()}.",
-                "semantic_anchors": [user_prompt.strip(), "peace of God", "trusting the Lord", "strength and courage"],
-                "seed_references": ["Proverbs 3:5-6", "Philippians 4:6-7", "Joshua 1:9"]
+                "theme_title": dignified_title,
+                "theological_summary": f"Standing firm in God's promises and wisdom when facing {user_prompt.strip()}.",
+                "semantic_anchors": [
+                    "peace of God guarding the heart",
+                    "trusting in the Lord with all your heart",
+                    "God is our refuge and strength very present help",
+                    user_prompt.strip()
+                ],
+                "seed_references": ["Philippians 4:6-7", "Proverbs 3:5-6", "Psalm 46:1", "Isaiah 41:10"]
             }
 
-    def vector_search_verses(
-        self,
-        query_text: str,
-        translation: str = "NKJV",
-        top_k: int = 15,
-        min_similarity: float = 0.50
-    ) -> List[Tuple[int, float]]:
-        """
-        Embeds query_text with Titan V2 and performs cosine similarity search
-        against SQLite's 62k precomputed embedding blobs in <5ms.
-        """
-        query_vec = self.bedrock.generate_embedding(query_text)
-        if query_vec is None:
-            return []
+    def _ensure_vector_cache(self, translation: str):
+        """Loads and normalizes all 31,102 vectors for the given translation in memory."""
+        if self._cached_trans == translation and self._cached_matrix is not None:
+            return
 
-        # Fetch candidate vectors from SQLite
         with db._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -116,32 +138,43 @@ class ThemeArchitect:
             rows = cursor.fetchall()
 
         if not rows:
-            return []
+            return
 
-        verse_ids = []
-        vectors = []
-        for r in rows:
-            blob = r["embedding_blob"]
-            if blob:
-                verse_ids.append(r["id"])
-                vectors.append(np.frombuffer(blob, dtype=np.float32))
-
-        if not vectors:
-            return []
-
-        # Matrix cosine similarity
-        matrix = np.vstack(vectors)
-        norms = np.linalg.norm(matrix, axis=1) * np.linalg.norm(query_vec)
+        self._cached_ids = [r["id"] for r in rows]
+        matrix = np.vstack([np.frombuffer(r["embedding_blob"], dtype=np.float32) for r in rows])
+        norms = np.linalg.norm(matrix, axis=1)
         norms[norms == 0] = 1e-10
-        similarities = np.dot(matrix, query_vec) / norms
+        self._cached_matrix = matrix / norms[:, None]
+        self._cached_trans = translation
 
-        # Top K indices
+    def vector_search_verses(
+        self,
+        query_text: str,
+        translation: str = "NKJV",
+        top_k: int = 20,
+        min_similarity: float = 0.38
+    ) -> List[Tuple[int, float]]:
+        """
+        Embeds query_text with Titan V2 and performs cosine similarity search
+        against SQLite's precomputed embeddings in <15ms.
+        """
+        query_vec = self.bedrock.generate_embedding(query_text)
+        if query_vec is None:
+            return []
+
+        self._ensure_vector_cache(translation)
+        if self._cached_matrix is None or not self._cached_ids:
+            return []
+
+        q_norm = query_vec / max(1e-10, np.linalg.norm(query_vec))
+        similarities = np.dot(self._cached_matrix, q_norm)
+
         ranked_indices = np.argsort(similarities)[::-1]
         results = []
         for idx in ranked_indices[:top_k]:
             sim = float(similarities[idx])
             if sim >= min_similarity:
-                results.append((verse_ids[idx], sim))
+                results.append((self._cached_ids[idx], sim))
 
         return results
 

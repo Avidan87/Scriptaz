@@ -5,14 +5,26 @@ and local macOS/Windows application paths.
 """
 
 import os
+import sys
 import boto3
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
 from dotenv import load_dotenv
 
-# Load local environment
-load_dotenv()
+# Load environment from multiple candidate locations
+candidate_env_paths = [
+    Path.home() / "Library" / "Application Support" / "Scriptaz" / ".env",
+    Path(__file__).resolve().parent.parent / ".env",
+    Path.cwd() / ".env",
+    Path(sys.executable).parent / ".env",
+]
+if hasattr(sys, "_MEIPASS"):
+    candidate_env_paths.insert(0, Path(sys._MEIPASS) / ".env")
+
+for env_path in candidate_env_paths:
+    if env_path.exists():
+        load_dotenv(dotenv_path=env_path, override=False)
 
 # Clean up AWS_PROFILE if no ~/.aws profile file exists on the machine
 if "AWS_PROFILE" in os.environ and not (Path.home() / ".aws" / "credentials").exists() and not (Path.home() / ".aws" / "config").exists():

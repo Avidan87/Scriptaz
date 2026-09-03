@@ -89,11 +89,22 @@ def run_app():
         sys.exit(app.exec())
 
     # Standard Daemon Mode (Menu Bar / System Tray Runner)
+    from services.macos_dock import set_dock_icon_visible, set_launch_on_startup
+    settings = db.get_user_settings()
+
+    # If background mode is enabled, hide from Dock immediately on launch
+    if settings.run_in_background:
+        set_dock_icon_visible(False)
+
+    # Sync startup LaunchAgent
+    if settings.launch_on_startup:
+        set_launch_on_startup(True)
+
     tray = ScriptazTrayApp(app)
 
-    # First-Launch Detection: If user has never completed onboarding, open Welcome Panel!
-    settings = db.get_user_settings()
+    # First-Launch Detection: Only show Welcome Panel if onboarding has NEVER been completed!
     if not settings.has_completed_onboarding:
+        set_dock_icon_visible(True)
         welcome_dialog = SettingsDialog(is_welcome_mode=True)
         welcome_dialog.settings_saved.connect(lambda _: tray._on_settings_reloaded())
         welcome_dialog.show()

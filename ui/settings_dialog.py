@@ -11,7 +11,7 @@ from typing import Optional, List, Dict
 from PySide6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QTextEdit, QPushButton, QFrame, QScrollArea, QListWidget, QListWidgetItem,
-    QApplication, QSizePolicy, QComboBox
+    QApplication, QSizePolicy, QComboBox, QCheckBox
 )
 from PySide6.QtCore import Qt, Signal, QThread, QObject, QSize
 from PySide6.QtGui import QColor, QFont, QCursor, QIcon, QTextCursor
@@ -19,6 +19,7 @@ from PySide6.QtGui import QColor, QFont, QCursor, QIcon, QTextCursor
 from core.db import db
 from core.models import UserSettingsModel, ScriptureTheme, BibleTranslation, CustomThemeModel
 from services.autostart import is_autostart_enabled, set_autostart_enabled
+from services.macos_dock import set_dock_icon_visible, set_launch_on_startup
 from resources.styles import get_control_panel_qss, THEMES
 from resources.icons import get_svg_icon
 from engine.theme_architect import theme_architect
@@ -119,105 +120,195 @@ class PinnedArchiveDialog(QDialog):
         super().__init__(parent)
         self.is_dark = is_dark
         self.setWindowTitle("Scriptaz — Pinned Verses")
-        self.setFixedSize(560, 500)
+        self.setFixedSize(620, 560)
         self.setObjectName("ControlPanelWindow")
         self.setStyleSheet(get_control_panel_qss(self.is_dark))
         self.setWindowFlags(Qt.Window)
         self._init_ui()
 
     def _init_ui(self):
+        c = THEMES['dark'] if self.is_dark else THEMES['light']
+        accent = c['accent']
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(28, 24, 28, 24)
-        layout.setSpacing(16)
+        layout.setSpacing(14)
 
+        # Header Row
         header_row = QHBoxLayout()
+        header_row.setSpacing(10)
         icon_lbl = QLabel()
-        accent = THEMES['dark']['accent'] if self.is_dark else THEMES['light']['accent']
-        icon_lbl.setPixmap(get_svg_icon("pin", color=accent, size=20).pixmap(20, 20))
+        icon_lbl.setPixmap(get_svg_icon("pin", color=accent, size=22).pixmap(22, 22))
+        icon_lbl.setStyleSheet("background: transparent; border: none;")
         header_row.addWidget(icon_lbl)
 
-        title = QLabel("Pinned Verses Archive")
-        title.setObjectName("PanelHeaderTitle")
-        header_row.addWidget(title)
+        self.title_lbl = QLabel("Pinned Verses Archive")
+        self.title_lbl.setObjectName("PanelHeaderTitle")
+        self.title_lbl.setStyleSheet(f"font-size: 18px; font-weight: 800; color: {c['text_primary']}; background: transparent;")
+        header_row.addWidget(self.title_lbl)
         header_row.addStretch()
         layout.addLayout(header_row)
 
-        subtitle = QLabel("Your permanent treasury of daily spiritual anchors.")
+        subtitle = QLabel("Your permanent treasury of daily spiritual anchors and 7-day memory rotation.")
         subtitle.setObjectName("PanelHeaderSubtitle")
+        subtitle.setStyleSheet(f"font-size: 12px; color: {c['text_muted']}; background: transparent;")
         layout.addWidget(subtitle)
 
-        # List
+        # List of Pinned Cards
         self.list_widget = QListWidget()
         self.list_widget.setStyleSheet(f"""
             QListWidget {{
-                background-color: {THEMES['dark']['bg_card'] if self.is_dark else THEMES['light']['bg_card']};
-                border: 1px solid {THEMES['dark']['border'] if self.is_dark else THEMES['light']['border']};
-                border-radius: 10px;
-                padding: 8px;
+                background-color: {c['bg_canvas']};
+                border: 1px solid {c['border']};
+                border-radius: 12px;
+                padding: 6px;
+                outline: none;
             }}
             QListWidget::item {{
-                padding: 10px;
-                border-bottom: 1px solid {THEMES['dark']['border_subtle'] if self.is_dark else THEMES['light']['border_subtle']};
+                background: transparent;
+                border: none;
+                margin-bottom: 6px;
+            }}
+            QListWidget::item:selected {{
+                background: transparent;
             }}
         """)
-        layout.addWidget(self.list_widget)
+        layout.addWidget(self.list_widget, 1)
         self._populate_list()
 
-        # Close
+        # Footer Row with Done Button
         btn_row = QHBoxLayout()
         btn_row.addStretch()
         close_btn = QPushButton("Done")
         close_btn.setObjectName("PrimaryBtn")
+        close_btn.setCursor(QCursor(Qt.PointingHandCursor))
         close_btn.clicked.connect(self.accept)
         btn_row.addWidget(close_btn)
         layout.addLayout(btn_row)
 
     def _populate_list(self):
+        c = THEMES['dark'] if self.is_dark else THEMES['light']
+        accent = c['accent']
         self.list_widget.clear()
         pinned = db.get_pinned_archive()
+
+        # Update Header Counter
+        self.title_lbl.setText(f"Pinned Verses Archive ({len(pinned)})")
+
         if not pinned:
-            item = QListWidgetItem("No pinned verses yet. Pin verses from the popup card!")
+            empty_card = QFrame()
+            empty_card.setStyleSheet(f"""
+                QFrame {{
+                    background-color: {c['bg_card']};
+                    border: 1.5px dashed {c['border']};
+                    border-radius: 12px;
+                }}
+            """)
+            empty_layout = QVBoxLayout(empty_card)
+            empty_layout.setContentsMargins(24, 30, 24, 30)
+            empty_layout.setAlignment(Qt.AlignCenter)
+            empty_layout.setSpacing(10)
+
+            empty_icon = QLabel()
+            empty_icon.setPixmap(get_svg_icon("pin", color=accent, size=32).pixmap(32, 32))
+            empty_icon.setAlignment(Qt.AlignCenter)
+            empty_icon.setStyleSheet("background: transparent; border: none;")
+            empty_layout.addWidget(empty_icon)
+
+            empty_title = QLabel("No Pinned Verses Yet")
+            empty_title.setAlignment(Qt.AlignCenter)
+            empty_title.setStyleSheet(f"font-size: 16px; font-weight: 700; color: {c['text_primary']}; background: transparent; border: none;")
+            empty_layout.addWidget(empty_title)
+
+            empty_sub = QLabel("When a scripture card appears during your workday, tap 'Pin Verse'\nto anchor it into your 7-day memory rotation.")
+            empty_sub.setAlignment(Qt.AlignCenter)
+            empty_sub.setWordWrap(True)
+            empty_sub.setStyleSheet(f"font-size: 13px; color: {c['text_secondary']}; background: transparent; border: none; padding: 4px 12px;")
+            empty_layout.addWidget(empty_sub)
+
+            item = QListWidgetItem()
+            item.setSizeHint(QSize(550, 230))
             self.list_widget.addItem(item)
+            self.list_widget.setItemWidget(item, empty_card)
             return
 
         for p in pinned:
-            widget = QWidget()
-            row = QHBoxLayout(widget)
-            row.setContentsMargins(4, 4, 4, 4)
-            
-            info = QVBoxLayout()
-            accent_color = THEMES['dark']['accent'] if self.is_dark else THEMES['light']['accent']
-            ref_lbl = QLabel(f"<b>{p.reference}</b> <span style='color:{accent_color};'>[{p.translation.value}]</span>")
-            ref_lbl.setStyleSheet("font-size: 13px;")
-            days_lbl = QLabel(f"Active Cycle: {p.days_remaining} days left" if p.days_remaining > 0 else "Archived in Memory")
-            days_lbl.setStyleSheet("font-size: 11px; color: #8E95A5;")
-            info.addWidget(ref_lbl)
-            info.addWidget(days_lbl)
-            row.addLayout(info)
-            row.addStretch()
+            card = QFrame()
+            card.setStyleSheet(f"""
+                QFrame {{
+                    background-color: {c['bg_card']};
+                    border: 1px solid {c['border']};
+                    border-radius: 10px;
+                }}
+            """)
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(16, 12, 16, 12)
+            card_layout.setSpacing(8)
+
+            # Top Row: Reference, Translation Pill, Cycle Badge, Unpin Button
+            top_row = QHBoxLayout()
+            top_row.setSpacing(8)
+
+            ref_lbl = QLabel(p.reference)
+            ref_lbl.setStyleSheet(f"font-size: 14px; font-weight: 700; color: {c['text_primary']}; background: transparent; border: none;")
+            top_row.addWidget(ref_lbl)
+
+            trans_lbl = QLabel(p.translation.value)
+            trans_lbl.setStyleSheet(f"""
+                QLabel {{
+                    background-color: {c['accent_subtle']};
+                    color: {c['accent']};
+                    border: 1px solid {c['accent']};
+                    border-radius: 4px;
+                    font-size: 10px;
+                    font-weight: 700;
+                    padding: 2px 6px;
+                }}
+            """)
+            top_row.addWidget(trans_lbl)
+
+            cycle_text = f"⏱️ {p.days_remaining}d left" if p.days_remaining > 0 else "📜 Memorized"
+            cycle_lbl = QLabel(cycle_text)
+            cycle_lbl.setStyleSheet(f"font-size: 11px; color: {c['text_muted']}; background: transparent; border: none;")
+            top_row.addWidget(cycle_lbl)
+
+            top_row.addStretch()
 
             unpin_btn = QPushButton("Unpin")
-            unpin_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: rgba(255,255,255,0.06);
-                    color: #A0A7B5;
-                    border: 1px solid #23262F;
+            unpin_btn.setCursor(QCursor(Qt.PointingHandCursor))
+            unpin_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: transparent;
+                    color: {c['text_muted']};
+                    border: 1px solid {c['border']};
                     border-radius: 6px;
-                    padding: 5px 12px;
+                    padding: 4px 10px;
                     font-size: 11px;
-                }
-                QPushButton:hover {
-                    color: #C59A4E;
-                    border-color: #C59A4E;
-                }
+                    font-weight: 600;
+                }}
+                QPushButton:hover {{
+                    color: #E05252;
+                    border-color: #E05252;
+                    background-color: rgba(224, 82, 82, 0.08);
+                }}
             """)
             unpin_btn.clicked.connect(lambda _, vid=p.verse_id: self._unpin(vid))
-            row.addWidget(unpin_btn)
+            top_row.addWidget(unpin_btn)
+            card_layout.addLayout(top_row)
 
+            # Verse Text
+            text_lbl = QLabel(f'"{p.text}"')
+            text_lbl.setWordWrap(True)
+            text_lbl.setStyleSheet(f"font-size: 12.5px; color: {c['text_secondary']}; line-height: 1.4; background: transparent; border: none;")
+            card_layout.addWidget(text_lbl)
+
+            # Calculate proper item size hint based on text length
+            text_lines = max(1, len(p.text) // 55 + 1)
+            card_h = 60 + (text_lines * 19)
             item = QListWidgetItem()
-            item.setSizeHint(widget.sizeHint())
+            item.setSizeHint(QSize(560, max(85, card_h)))
             self.list_widget.addItem(item)
-            self.list_widget.setItemWidget(item, widget)
+            self.list_widget.setItemWidget(item, card)
 
     def _unpin(self, verse_id: int):
         db.unpin_verse(verse_id)
@@ -237,6 +328,7 @@ class ThemeHistoryDialog(QDialog):
     def __init__(self, is_dark: bool = True, parent=None):
         super().__init__(parent)
         self.is_dark = is_dark
+        self.setObjectName("ControlPanelWindow")
         self.setWindowTitle("Focus History & Search")
         self.setFixedSize(620, 540)
         self.setStyleSheet(get_control_panel_qss(self.is_dark))
@@ -244,6 +336,7 @@ class ThemeHistoryDialog(QDialog):
         self._init_ui()
 
     def _init_ui(self):
+        c = THEMES['dark'] if self.is_dark else THEMES['light']
         layout = QVBoxLayout(self)
         layout.setContentsMargins(26, 22, 26, 22)
         layout.setSpacing(14)
@@ -252,9 +345,9 @@ class ThemeHistoryDialog(QDialog):
         header_text = QVBoxLayout()
         header_text.setSpacing(3)
         title = QLabel("Focus History & Search")
-        title.setStyleSheet(f"font-size: 16px; font-weight: 700; color: {THEMES['dark']['text_primary'] if self.is_dark else THEMES['light']['text_primary']};")
+        title.setStyleSheet(f"font-size: 17px; font-weight: 700; color: {c['text_primary']}; background: transparent;")
         sub = QLabel(f"Browse, search, and switch between your {len(self.all_themes)} curated focuses.")
-        sub.setStyleSheet("font-size: 12px; color: #8E95A5;")
+        sub.setStyleSheet(f"font-size: 12.5px; color: {c['text_secondary']}; background: transparent;")
         header_text.addWidget(title)
         header_text.addWidget(sub)
         layout.addLayout(header_text)
@@ -262,16 +355,29 @@ class ThemeHistoryDialog(QDialog):
         # Search Bar
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Search by keyword, topic, or title (e.g. 'Peace', 'Leadership')...")
-        self.search_input.addAction(get_svg_icon("search", color="#8E95A5", size=14), QLineEdit.LeadingPosition)
+        self.search_input.addAction(get_svg_icon("search", color=c["text_muted"], size=14), QLineEdit.LeadingPosition)
+        self.search_input.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: {c['bg_card']};
+                color: {c['text_primary']};
+                border: 1.5px solid {c['border']};
+                border-radius: 9px;
+                padding: 9px 12px;
+                font-size: 13px;
+            }}
+            QLineEdit:focus {{
+                border-color: {c['accent']};
+                background-color: {c['bg_card']};
+            }}
+        """)
         self.search_input.textChanged.connect(self._on_search_changed)
         layout.addWidget(self.search_input)
 
         # Scrollable List Area
         self.list_widget = QListWidget()
-        c = THEMES['dark'] if self.is_dark else THEMES['light']
         self.list_widget.setStyleSheet(f"""
             QListWidget {{
-                background-color: {c['bg_card']};
+                background-color: {c['bg_canvas']};
                 border: 1px solid {c['border']};
                 border-radius: 10px;
                 padding: 8px;
@@ -288,13 +394,27 @@ class ThemeHistoryDialog(QDialog):
         # Footer
         footer = QHBoxLayout()
         self.count_lbl = QLabel(f"{len(self.all_themes)} themes saved")
-        self.count_lbl.setStyleSheet("font-size: 11px; color: #8E95A5;")
+        self.count_lbl.setStyleSheet(f"font-size: 12px; color: {c['text_muted']};")
         footer.addWidget(self.count_lbl)
         footer.addStretch()
 
         close_btn = QPushButton("Done")
-        close_btn.setObjectName("SecondaryBtn")
         close_btn.setCursor(QCursor(Qt.PointingHandCursor))
+        close_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {c['bg_card']};
+                color: {c['text_primary']};
+                border: 1px solid {c['border']};
+                border-radius: 8px;
+                padding: 7px 20px;
+                font-size: 12.5px;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{
+                background-color: {c['bg_secondary']};
+                border-color: {c['accent']};
+            }}
+        """)
         close_btn.clicked.connect(self.accept)
         footer.addWidget(close_btn)
         layout.addLayout(footer)
@@ -351,7 +471,7 @@ class ThemeHistoryDialog(QDialog):
                 all_hdr = QListWidgetItem()
                 all_hdr.setFlags(Qt.NoItemFlags)
                 all_lbl = QLabel("  OLDER SAVED FOCUSES")
-                all_lbl.setStyleSheet("font-size: 10.5px; font-weight: 700; color: #8E95A5; letter-spacing: 0.8px; padding: 12px 4px 4px 4px;")
+                all_lbl.setStyleSheet(f"font-size: 11px; font-weight: 700; color: {c['text_secondary']}; letter-spacing: 0.8px; padding: 12px 4px 4px 4px; background: transparent;")
                 all_hdr.setSizeHint(QSize(540, 36))
                 self.list_widget.addItem(all_hdr)
                 self.list_widget.setItemWidget(all_hdr, all_lbl)
@@ -367,17 +487,17 @@ class ThemeHistoryDialog(QDialog):
         widget = QFrame()
         widget.setStyleSheet(f"""
             QFrame {{
-                background-color: {c['bg_secondary']};
+                background-color: {c['bg_card']};
                 border: 1px solid {c['border']};
                 border-radius: 9px;
             }}
             QFrame:hover {{
                 border-color: {accent};
-                background-color: {c['bg_subtle']};
+                background-color: {c['bg_card']};
             }}
         """)
         row = QHBoxLayout(widget)
-        row.setContentsMargins(14, 10, 14, 10)
+        row.setContentsMargins(14, 11, 14, 11)
         row.setSpacing(12)
 
         # Icon
@@ -392,30 +512,78 @@ class ThemeHistoryDialog(QDialog):
         
         title_row = QHBoxLayout()
         title_lbl = QLabel(theme.title)
-        title_lbl.setStyleSheet(f"font-size: 13.5px; font-weight: 600; color: {c['text_primary']}; background: transparent; border: none;")
+        title_lbl.setStyleSheet(f"font-size: 14px; font-weight: 700; color: {c['text_primary']}; background: transparent; border: none;")
         title_row.addWidget(title_lbl)
         title_row.addStretch()
         text_box.addLayout(title_row)
 
         sub_text = theme.user_prompt or theme.theological_summary or "Curated spiritual focus"
-        if len(sub_text) > 80:
-            sub_text = sub_text[:77] + "..."
+        if len(sub_text) > 85:
+            sub_text = sub_text[:82] + "..."
         prompt_lbl = QLabel(sub_text)
-        prompt_lbl.setStyleSheet("font-size: 11.5px; color: #8E95A5; background: transparent; border: none;")
+        prompt_lbl.setStyleSheet(f"font-size: 12px; color: {c['text_secondary']}; background: transparent; border: none;")
         text_box.addWidget(prompt_lbl)
         row.addLayout(text_box, 1)
 
+        # Actions Layout
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(6)
+
         # Select Action Button
         sel_btn = QPushButton("Select")
-        sel_btn.setObjectName("SecondaryBtn")
         sel_btn.setCursor(QCursor(Qt.PointingHandCursor))
-        sel_btn.setStyleSheet("padding: 6px 16px; font-size: 12px; font-weight: 600;")
+        sel_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {c['bg_secondary']};
+                color: {c['text_primary']};
+                border: 1px solid {c['border']};
+                border-radius: 6px;
+                padding: 6px 14px;
+                font-size: 12px;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{
+                background-color: {accent};
+                color: #FFFFFF;
+                border-color: {accent};
+            }}
+        """)
         sel_btn.clicked.connect(lambda _, tid=theme.id, ttitle=theme.title: self._select_and_close(tid, ttitle))
-        row.addWidget(sel_btn)
+        btn_layout.addWidget(sel_btn)
+
+        # Delete Action Button
+        del_btn = QPushButton("✕")
+        del_btn.setToolTip("Delete this curated focus")
+        del_btn.setCursor(QCursor(Qt.PointingHandCursor))
+        del_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                color: {c['text_muted']};
+                border: 1px solid {c['border']};
+                border-radius: 6px;
+                padding: 5px 9px;
+                font-size: 12px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: rgba(220, 53, 69, 0.12);
+                color: #EF4444;
+                border-color: #FCA5A5;
+            }}
+        """)
+        del_btn.clicked.connect(lambda _, tid=theme.id: self._delete_theme(tid))
+        btn_layout.addWidget(del_btn)
+
+        row.addLayout(btn_layout)
 
         item.setSizeHint(QSize(540, 68))
         self.list_widget.addItem(item)
         self.list_widget.setItemWidget(item, widget)
+
+    def _delete_theme(self, theme_id: int):
+        db.delete_custom_theme(theme_id)
+        self.all_themes = db.get_all_custom_themes()
+        self._populate_list(query=self.search_input.text().strip())
 
     def _select_and_close(self, theme_id: int, title: str):
         self.theme_selected.emit(theme_id, title)
@@ -967,6 +1135,15 @@ class SettingsDialog(QDialog):
         cadence_section.addLayout(steppers_row)
         main_layout.addLayout(cadence_section)
 
+        # Background & Startup Mode Toggle
+        bg_toggle_row = QHBoxLayout()
+        self.bg_checkbox = QCheckBox("Launch on Mac startup & run quietly in background")
+        self.bg_checkbox.setChecked(self.settings.run_in_background)
+        self.bg_checkbox.setCursor(QCursor(Qt.PointingHandCursor))
+        self.bg_checkbox.toggled.connect(self._check_dirty)
+        bg_toggle_row.addWidget(self.bg_checkbox)
+        main_layout.addLayout(bg_toggle_row)
+
         # -------------------------------------------------------------
         # 7. Footer: Action Buttons
         # -------------------------------------------------------------
@@ -1236,8 +1413,26 @@ class SettingsDialog(QDialog):
         dlg = HowItWorksDialog(is_dark=self.is_dark, parent=self)
         dlg.exec()
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        set_dock_icon_visible(True)
+        self.raise_()
+        self.activateWindow()
+
+    def closeEvent(self, event):
+        super().closeEvent(event)
+        # Ensure onboarding is marked completed so welcome dialog never repeats
+        with db._get_connection() as conn:
+            conn.execute("INSERT OR REPLACE INTO user_settings (key, value) VALUES ('has_completed_onboarding', 'true')")
+            conn.commit()
+        if self.settings.run_in_background:
+            set_dock_icon_visible(False)
+
     def _save_and_close(self):
         theme_enum = ScriptureTheme.CUSTOM if self.selected_theme == "Custom" else ScriptureTheme(self.selected_theme)
+        run_bg = self.bg_checkbox.isChecked() if hasattr(self, "bg_checkbox") else True
+        set_launch_on_startup(run_bg)
+
         updated = UserSettingsModel(
             user_name=self.name_input.text().strip() or "Friend",
             interval_minutes=self.interval_minutes,
@@ -1247,7 +1442,8 @@ class SettingsDialog(QDialog):
             active_custom_theme_id=self.active_custom_id,
             active_custom_theme_title=self.active_custom_title,
             personal_context=self.context_input.toPlainText().strip(),
-            launch_on_startup=self.settings.launch_on_startup,
+            launch_on_startup=run_bg,
+            run_in_background=run_bg,
             dark_mode=self.is_dark,
             has_completed_onboarding=True
         )

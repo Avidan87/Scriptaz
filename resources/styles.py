@@ -10,33 +10,34 @@ Color Philosophy: 60-30-10 rule — muted burgundy accent, never screaming
 """
 
 from typing import Dict
+from resources.icons import get_icon_path
 
 # ─────────────────────────────────────────────────────────
 # DESIGN TOKENS (UI Designer: Minimalism + Spiritual Calm)
 # ─────────────────────────────────────────────────────────
 THEMES: Dict[str, Dict[str, str]] = {
     "light": {
-        "bg_canvas": "#F7F8FA",
+        "bg_canvas": "#F9FAFB",
         "bg_card": "#FFFFFF",
-        "bg_secondary": "#F0F2F5",
-        "bg_subtle": "#E4E7EC",
-        "text_primary": "#1A1D24",
-        "text_secondary": "#525866",
-        "text_muted": "#868D9D",
-        "accent": "#9E6A1B",           # Rich Antique Caramel Ochre (Calm & Elegant)
-        "accent_hover": "#875812",
-        "accent_subtle": "rgba(158, 106, 27, 0.08)",
-        "border": "#E1E4EA",
-        "border_subtle": "#ECEFF3",
-        "border_active": "#9E6A1B",
-        "gold": "#9E6A1B",
+        "bg_secondary": "#F3F4F6",
+        "bg_subtle": "#E5E7EB",
+        "text_primary": "#111827",        # Deep rich carbon ink (WCAG AAA contrast)
+        "text_secondary": "#4B5563",      # Refined slate subtext
+        "text_muted": "#6B7280",          # Accessible subtext
+        "accent": "#B37B24",              # Warm Antique Ochre Gold
+        "accent_hover": "#94631A",
+        "accent_subtle": "rgba(179, 123, 36, 0.10)",
+        "border": "#E5E7EB",
+        "border_subtle": "#F3F4F6",
+        "border_active": "#B37B24",
+        "gold": "#B37B24",
         "btn_text": "#FFFFFF",
         "shadow": "rgba(0, 0, 0, 0.06)",
-        "divider": "#E4E7EC",
-        "chip_bg": "#F0F2F5",
-        "chip_active_bg": "rgba(158, 106, 27, 0.09)",
-        "stepper_btn": "#E4E7EC",
-        "stepper_btn_hover": "#D8DCE3"
+        "divider": "#E5E7EB",
+        "chip_bg": "#F3F4F6",
+        "chip_active_bg": "rgba(179, 123, 36, 0.12)",
+        "stepper_btn": "#E5E7EB",
+        "stepper_btn_hover": "#D1D5DB"
     },
     "dark": {
         "bg_canvas": "#0D0E11",        # Deep Obsidian Noir
@@ -45,7 +46,7 @@ THEMES: Dict[str, Dict[str, str]] = {
         "bg_subtle": "#242731",
         "text_primary": "#F3F4F6",      # Soft Warm Pearl
         "text_secondary": "#A0A7B5",    # Slate Mist
-        "text_muted": "#687082",        # Muted Subtext
+        "text_muted": "#868E9E",        # Muted Subtext
         "accent": "#C59A4E",           # Calming Muted Champagne Gold
         "accent_hover": "#D8AA5A",
         "accent_subtle": "rgba(197, 154, 78, 0.12)",
@@ -65,7 +66,7 @@ THEMES: Dict[str, Dict[str, str]] = {
 
 
 def get_popup_qss(is_dark: bool = False) -> str:
-    """Returns the QSS stylesheet for the Centered Scripture Pop-up Card & Deep Insight Wing."""
+    """Returns the QSS stylesheet for the Centered Scripture Pop-up Card."""
     c = THEMES["dark"] if is_dark else THEMES["light"]
     
     return f"""
@@ -76,66 +77,39 @@ def get_popup_qss(is_dark: bool = False) -> str:
         font-family: '.AppleSystemUIFont', 'Helvetica Neue', 'Helvetica', sans-serif;
     }}
     
-    QFrame#ScripturePane {{
-        background-color: {c["bg_card"]};
-        border-top-left-radius: 12px;
-        border-bottom-left-radius: 12px;
-    }}
-    
-    QFrame#DemarcationDivider {{
-        background-color: {c["divider"]};
-        max-width: 1px;
-        min-width: 1px;
-    }}
-    
-    QFrame#InsightPane {{
-        background-color: {c["bg_secondary"]};
-        border-top-right-radius: 12px;
-        border-bottom-right-radius: 12px;
-    }}
-    
     QLabel#ThemeBadge {{
         background-color: {c["accent_subtle"]};
         color: {c["accent"]};
         border: 1px solid {c["accent"]};
         border-radius: 10px;
         font-size: 11px;
-        font-weight: 600;
+        font-weight: 700;
         padding: 4px 10px;
-        letter-spacing: 0.5px;
+        letter-spacing: 0.6px;
     }}
     
-    QLabel#VersionBadge {{
-        background-color: {c["bg_subtle"]};
-        color: {c["text_muted"]};
+    QLabel#TranslationBadge {{
+        background-color: {c["bg_secondary"]};
+        color: {c["text_secondary"]};
         border: 1px solid {c["border"]};
-        border-radius: 10px;
-        font-size: 11px;
-        font-weight: 600;
-        padding: 4px 10px;
+        border-radius: 8px;
+        font-size: 11.5px;
+        font-weight: 700;
+        padding: 3px 9px;
     }}
-    
-    QLabel#InsightBadge {{
-        background-color: {c["accent_subtle"]};
-        color: {c["accent"]};
-        border: 1px solid {c["accent"]};
-        border-radius: 10px;
-        font-size: 11px;
-        font-weight: 600;
-        padding: 4px 10px;
-        letter-spacing: 0.5px;
-    }}
-    
-    QTextBrowser#ScriptureTextBrowser {{
-        background-color: transparent;
-        border: none;
+
+    QLabel#ScriptureReference {{
+        font-size: 15px;
+        font-weight: 700;
         color: {c["text_primary"]};
-        selection-background-color: {c["accent_subtle"]};
-        selection-color: {c["accent"]};
+        letter-spacing: -0.2px;
+        background: transparent;
+        border: none;
     }}
     
-    QTextBrowser#InsightTextBrowser {{
+    QTextBrowser, QTextBrowser#ScriptureText, QTextBrowser#ScriptureTextBrowser {{
         background-color: transparent;
+        background: transparent;
         border: none;
         color: {c["text_primary"]};
         selection-background-color: {c["accent_subtle"]};
@@ -143,46 +117,20 @@ def get_popup_qss(is_dark: bool = False) -> str:
     }}
     
     QPushButton#PinButton {{
-        background-color: {c["bg_subtle"]};
+        background-color: {c["bg_secondary"]};
         color: {c["text_primary"]};
         border: 1px solid {c["border"]};
         border-radius: 8px;
         padding: 7px 16px;
         font-size: 12px;
-        font-weight: 500;
+        font-weight: 600;
     }}
     QPushButton#PinButton:hover {{
-        background-color: {c["border_subtle"]};
-        border-color: {c["text_muted"]};
-    }}
-    
-    QPushButton#InsightButton {{
-        background-color: {c["accent"]};
-        color: #FFFFFF;
-        border: none;
-        border-radius: 8px;
-        padding: 7px 16px;
-        font-size: 12px;
-        font-weight: 600;
-    }}
-    QPushButton#InsightButton:hover {{
-        background-color: {c["accent_hover"]};
-    }}
-    
-    QPushButton#InsightButtonActive {{
         background-color: {c["bg_subtle"]};
-        color: {c["accent"]};
-        border: 1px solid {c["accent"]};
-        border-radius: 8px;
-        padding: 7px 16px;
-        font-size: 12px;
-        font-weight: 600;
+        border-color: {c["accent"]};
+        color: {c["text_primary"]};
     }}
     
-    QScrollBar:vertical {{
-        border-color: {c["accent"]};
-        color: {c["accent"]};
-    }}
     QPushButton#PinButtonActive {{
         background-color: {c["accent_subtle"]};
         color: {c["accent"]};
@@ -200,26 +148,30 @@ def get_popup_qss(is_dark: bool = False) -> str:
         border-radius: 8px;
         font-size: 12px;
         font-weight: 600;
-        padding: 6px 12px;
+        padding: 6px 14px;
     }}
     QPushButton#TransCycleBtn:hover {{
         color: {c["text_primary"]};
         border-color: {c["accent"]};
+        background-color: {c["bg_subtle"]};
     }}
     
-    QPushButton#CloseBtn {{
-        background-color: {c["accent"]};
-        color: #0D0E11;
-        border: none;
+    QPushButton#DismissBtn {{
+        background-color: transparent;
+        color: {c["text_muted"]};
+        border: 1px solid {c["border"]};
         border-radius: 8px;
-        font-size: 12px;
-        font-weight: 700;
         padding: 6px 16px;
+        font-size: 12px;
+        font-weight: 600;
     }}
-    QPushButton#CloseBtn:hover {{
-        background-color: {c["accent_hover"]};
+    QPushButton#DismissBtn:hover {{
+        color: {c["text_primary"]};
+        border-color: {c["text_secondary"]};
+        background-color: {c["bg_secondary"]};
     }}
     """
+
 
 
 def get_control_panel_qss(is_dark: bool = True) -> str:
@@ -295,6 +247,33 @@ def get_control_panel_qss(is_dark: bool = True) -> str:
     QLineEdit:focus, QTextEdit:focus {{
         border: 1px solid {c["accent"]};
         background-color: {c["bg_card"]};
+    }}
+    
+    QCheckBox {{
+        font-size: 12.5px;
+        font-weight: 500;
+        color: {c["text_primary"]};
+        spacing: 9px;
+        background: transparent;
+    }}
+    QCheckBox::indicator {{
+        width: 17px;
+        height: 17px;
+        border-radius: 4px;
+        border: 1.5px solid {"#4B5563" if is_dark else "#CBD5E1"};
+        background-color: {"#1D2027" if is_dark else "#FFFFFF"};
+    }}
+    QCheckBox::indicator:hover {{
+        border-color: {c["accent"]};
+    }}
+    QCheckBox::indicator:checked {{
+        background-color: {c["accent"]};
+        border-color: {c["accent"]};
+        image: url({get_icon_path("checkbox_check.png")});
+    }}
+    QCheckBox::indicator:checked:hover {{
+        background-color: {c["accent_hover"]};
+        border-color: {c["accent_hover"]};
     }}
     
     /* 4-Segment Bible Translation Bar */

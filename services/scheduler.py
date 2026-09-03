@@ -8,6 +8,7 @@ import sys
 import time
 import ctypes
 import platform
+from datetime import datetime, date
 from typing import Optional, Callable
 from PySide6.QtCore import QObject, QTimer, Signal
 
@@ -66,17 +67,28 @@ class WorkdayScheduler(QObject):
         self.active_seconds_accumulated: int = 0
         self.verses_delivered_today: int = 0
         self.current_cycle_number: int = 1
+        self.current_date: date = datetime.now().date()
         self.last_drop_timestamp: float = time.time()
         self.drop_counter: int = 0               # Used for 60/40 pinned vs fresh rotation
         
-        # 1-Second Heartbeat Timer
-        self.heartbeat_timer = QTimer(self)
-        self.heartbeat_timer.timeout.connect(self._tick)
-        self.heartbeat_timer.start(1000)         # 1000ms = 1 second
+        self.heartbeat_timer: Optional[QTimer] = None
+
+    def start(self):
+        """Starts or restarts the 1-second heartbeat timer once QApplication is running."""
+        if self.heartbeat_timer is None:
+            self.heartbeat_timer = QTimer(self)
+            self.heartbeat_timer.timeout.connect(self._tick)
+        if not self.heartbeat_timer.isActive():
+            self.heartbeat_timer.start(1000)
+        self._emit_status()
 
     def reload_settings(self):
         """Reloads settings from SQLite."""
         self.settings = db.get_user_settings()
+        target_seconds = max(60, self.settings.interval_minutes * 60)
+        if self.active_seconds_accumulated > target_seconds:
+            self.active_seconds_accumulated = target_seconds
+        self._emit_status()
 
     def set_paused(self, paused: bool):
         """Pauses or resumes active-time tracking."""
@@ -85,10 +97,17 @@ class WorkdayScheduler(QObject):
 
     def trigger_now(self):
         """Instantly drops the next scripture on user demand."""
-        self._deliver_scripture()
+        self._deliver_scripture(force_fresh=True)
 
     def _tick(self):
         """Called every second to track active time."""
+        # Midnight Day Rollover: reset daily count if a new day has arrived
+        today = datetime.now().date()
+        if today != self.current_date:
+            self.current_date = today
+            self.verses_delivered_today = 0
+            self.current_cycle_number = 1
+
         if self.is_paused:
             self._emit_status(state="Paused")
             return
@@ -96,7 +115,7 @@ class WorkdayScheduler(QObject):
         idle_sec = get_system_idle_seconds()
         if idle_sec >= IDLE_THRESHOLD_SECONDS:
             # User is away from desk / screen locked -> pause accumulation
-            self._emit_status(state="Idle / Away")
+            self._emit_status(state="Away")
             return
 
         # User is actively working
@@ -104,11 +123,12 @@ class WorkdayScheduler(QObject):
         
         target_seconds = max(60, self.settings.interval_minutes * 60)
         if self.active_seconds_accumulated >= target_seconds:
-            self._deliver_scripture()
+            self._deliver_scripture(force_fresh=False)
+            return
 
         self._emit_status(state="Active")
 
-    def _deliver_scripture(self):
+    def _deliver_scripture(self, force_fresh: bool = False):
         """Pulls the next verse using 60/40 pinned priority and emits signal."""
         self.active_seconds_accumulated = 0
         self.drop_counter += 1
@@ -119,11 +139,11 @@ class WorkdayScheduler(QObject):
             self.verses_delivered_today = 1
             self.current_cycle_number += 1
 
-        # 60/40 Rotation: Every 3rd drop attempts to draw from pinned verses
+        # 60/40 Rotation: Every 3rd drop attempts to draw from pinned verses (automatic drops only)
         pinned_verses = db.get_pinned_verses()
         verse_data = None
 
-        if pinned_verses and (self.drop_counter % 3 == 0):
+        if not force_fresh and pinned_verses and (self.drop_counter % 3 == 0):
             pinned_idx = (self.drop_counter // 3) % len(pinned_verses)
             pv = pinned_verses[pinned_idx]
             verse_data = {
@@ -155,15 +175,24 @@ class WorkdayScheduler(QObject):
         self.verse_trigger_signal.emit(verse_data)
         self._emit_status(state="Delivered")
 
-    def _emit_status(self, state: str = "Active"):
-        """Emits current timing and cycle metrics to the UI."""
+    def get_current_status(self) -> dict:
+        """Returns the current real-time state dict synchronously."""
         target_seconds = max(60, self.settings.interval_minutes * 60)
         remaining_seconds = max(0, target_seconds - self.active_seconds_accumulated)
-        
-        status = {
+        if self.is_paused:
+            state = "Paused"
+        elif get_system_idle_seconds() >= IDLE_THRESHOLD_SECONDS:
+            state = "Away"
+        else:
+            state = "Active"
+
+        return {
             "state": state,
             "is_paused": self.is_paused,
-            "active_minutes_accumulated": self.active_seconds_accumulated // 60,
+            "is_idle": (state == "Away"),
+            "active_seconds_accumulated": self.active_seconds_accumulated,
+            "target_seconds": target_seconds,
+            "remaining_seconds": remaining_seconds,
             "remaining_minutes": max(1, remaining_seconds // 60) if remaining_seconds > 0 else 0,
             "verses_delivered_today": self.verses_delivered_today,
             "daily_limit": self.settings.daily_limit,
@@ -171,7 +200,15 @@ class WorkdayScheduler(QObject):
             "active_theme": self.settings.active_theme,
             "preferred_version": self.settings.preferred_bible_version
         }
+
+    def _emit_status(self, state: Optional[str] = None):
+        """Emits current timing and cycle metrics to the UI."""
+        status = self.get_current_status()
+        if state:
+            status["state"] = state
+            status["is_idle"] = (state == "Away")
         self.status_updated_signal.emit(status)
 
 
 scheduler = WorkdayScheduler()
+

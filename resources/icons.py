@@ -74,36 +74,28 @@ def get_svg_icon(name: str, color: str = "#C59A4E", size: int = 20) -> QIcon:
 
 def get_tray_icon() -> QIcon:
     """
-    Renders a crisp vector feather icon conforming to Apple HIG (18pt standard / 36px Retina)
-    configured as a native macOS template mask (isMask=True) with automatic OS light/dark adaptation.
+    Returns the official crisp Scriptaz White Feather icon
+    conforming to native macOS menu bar standards (Retina @2x with isMask=True).
+    Matches optical size and weight of Notion, Claude, and System icons.
     """
-    svg_template = SVG_ICONS.get("feather")
-    if not svg_template:
-        return QIcon()
-
-    svg_black = svg_template.format(color="#000000")
-    renderer = QSvgRenderer(QByteArray(svg_black.encode("utf-8")))
-
-    # 1. Standard 1x Pixmap (18x18)
-    p1 = QPixmap(QSize(18, 18))
-    p1.fill(Qt.transparent)
-    painter1 = QPainter(p1)
-    renderer.render(painter1)
-    painter1.end()
-
-    # 2. Retina 2x Pixmap (36x36 with devicePixelRatio = 2.0)
-    p2 = QPixmap(QSize(36, 36))
-    p2.setDevicePixelRatio(2.0)
-    p2.fill(Qt.transparent)
-    painter2 = QPainter(p2)
-    renderer.render(painter2)
-    painter2.end()
+    from pathlib import Path
+    icons_dir = Path(__file__).resolve().parent / "icons"
+    p2_path = icons_dir / "tray_white@2x.png"
+    p1_path = icons_dir / "tray_white.png"
 
     icon = QIcon()
-    icon.addPixmap(p1)
-    icon.addPixmap(p2)
+    if p2_path.exists():
+        p2 = QPixmap(str(p2_path))
+        p2.setDevicePixelRatio(2.0)
+        icon.addPixmap(p2)
+    if p1_path.exists():
+        p1 = QPixmap(str(p1_path))
+        p1.setDevicePixelRatio(1.0)
+        icon.addPixmap(p1)
+
     if hasattr(icon, "setIsMask"):
         icon.setIsMask(True)
+
     return icon
 
 
@@ -111,3 +103,15 @@ def get_raw_svg(name: str, color: str = "#C59A4E") -> str:
     """Returns the formatted SVG XML string."""
     template = SVG_ICONS.get(name, "")
     return template.format(color=color)
+
+
+def get_icon_path(filename: str) -> str:
+    """Returns absolute posix path for an icon in resources/icons."""
+    import sys
+    from pathlib import Path
+    if getattr(sys, 'frozen', False):
+        base_dir = Path(sys._MEIPASS) / "resources" / "icons"
+    else:
+        base_dir = Path(__file__).resolve().parent / "icons"
+    return (base_dir / filename).as_posix()
+
