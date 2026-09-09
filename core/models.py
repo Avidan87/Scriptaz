@@ -73,27 +73,6 @@ class UserSettingsModel(BaseModel):
         return self.personal_context
 
 
-class InsightRequest(BaseModel):
-    verse_id: Optional[int] = None
-    reference: str
-    translation: BibleTranslation
-    verse_text: str
-    surrounding_context: Optional[str] = None
-    active_theme: str
-    personal_context: Optional[str] = None
-    user_name: Optional[str] = None
-
-
-class StructuredInsight(BaseModel):
-    context_and_setting: str = ""
-    original_word_illumination: str = ""
-    christ_centered_revelation: str
-    connected_scriptures: List[str] = Field(default_factory=list)
-    is_cached: bool = False
-    model_used: Optional[str] = None
-    cached_at: Optional[datetime] = None
-
-
 class PinnedVerseModel(BaseModel):
     id: Optional[int] = None
     verse_id: int

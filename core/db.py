@@ -19,7 +19,6 @@ from core.models import (
     ScriptureTheme,
     UserSettingsModel,
     CustomThemeModel,
-    StructuredInsight,
     PinnedVerseModel,
     QueueItemModel
 )
@@ -64,26 +63,7 @@ class DatabaseManager:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_verses_theme ON verses(theme, translation);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_verses_ref ON verses(reference);")
 
-            # 2. Deep Insight Cache Table
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS insights_cache (
-                    cache_key TEXT PRIMARY KEY,
-                    verse_ref TEXT NOT NULL,
-                    translation TEXT NOT NULL,
-                    theme TEXT NOT NULL,
-                    personal_context TEXT,
-                    raw_output TEXT NOT NULL,
-                    context_setting TEXT NOT NULL,
-                    word_illumination TEXT NOT NULL,
-                    christ_revelation TEXT NOT NULL,
-                    connected_scriptures TEXT,
-                    model_used TEXT NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-            """)
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_cache_ref ON insights_cache(verse_ref, theme);")
-
-            # 3. User Settings Table
+            # 2. User Settings Table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS user_settings (
                     key TEXT PRIMARY KEY,
@@ -151,12 +131,6 @@ class DatabaseManager:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_queue_day ON active_queue(day_date, is_shown);")
 
             conn.commit()
-
-    @staticmethod
-    def generate_cache_key(reference: str, translation: str, theme: str, personal_context: Optional[str]) -> str:
-        clean_context = (personal_context or "").strip().lower()
-        key_input = f"{reference.strip().lower()}:{translation.strip().upper()}:{theme.strip().lower()}:{clean_context}"
-        return hashlib.sha256(key_input.encode("utf-8")).hexdigest()
 
     def insert_verse(self, verse: VerseModel) -> int:
         with self._get_connection() as conn:
@@ -327,66 +301,6 @@ class DatabaseManager:
             cursor = conn.cursor()
             cursor.execute("SELECT COUNT(*) as count FROM verses")
             return cursor.fetchone()["count"]
-
-    def get_cached_insight(self, cache_key: str) -> Optional[StructuredInsight]:
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM insights_cache WHERE cache_key = ?", (cache_key,))
-            row = cursor.fetchone()
-            if not row:
-                return None
-            
-            connected_scripts = json.loads(row["connected_scriptures"]) if row["connected_scriptures"] else []
-            return StructuredInsight(
-                context_and_setting=row["context_setting"],
-                original_word_illumination=row["word_illumination"],
-                christ_centered_revelation=row["christ_revelation"],
-                connected_scriptures=connected_scripts,
-                is_cached=True,
-                model_used=row["model_used"],
-                cached_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None
-            )
-
-    def save_cached_insight(
-        self,
-        cache_key: str,
-        verse_ref: str,
-        translation: str,
-        theme: str,
-        personal_context: Optional[str],
-        raw_output: str,
-        insight: StructuredInsight,
-        model_used: str
-    ):
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO insights_cache (
-                    cache_key, verse_ref, translation, theme, personal_context,
-                    raw_output, context_setting, word_illumination, christ_revelation,
-                    connected_scriptures, model_used
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(cache_key) DO UPDATE SET
-                    raw_output = excluded.raw_output,
-                    context_setting = excluded.context_setting,
-                    word_illumination = excluded.word_illumination,
-                    christ_revelation = excluded.christ_revelation,
-                    connected_scriptures = excluded.connected_scriptures,
-                    model_used = excluded.model_used
-            """, (
-                cache_key,
-                verse_ref,
-                translation,
-                theme,
-                personal_context or "",
-                raw_output,
-                insight.context_and_setting,
-                insight.original_word_illumination,
-                insight.christ_centered_revelation,
-                json.dumps(insight.connected_scriptures),
-                model_used
-            ))
-            conn.commit()
 
     def get_settings(self) -> UserSettingsModel:
         with self._get_connection() as conn:
@@ -686,6 +600,71 @@ class DatabaseManager:
     def get_pinned_verses(self) -> List[PinnedVerseModel]:
         return self.get_pinned_archive()
 
+    # ----------------------------------------------------------------------
+    # Passage Intelligence: expand an anchor verse to its natural sense-unit
+    # (boundaries precomputed once by scripts/build_passages.py).
+    # ----------------------------------------------------------------------
+    def get_passage_span(self, book: str, chapter: int, verse: int, translation: str) -> Tuple[int, int]:
+        """Returns (start_verse, end_verse) for the passage containing this verse."""
+        trans_val = translation.value if hasattr(translation, 'value') else str(translation)
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute("""
+                    SELECT start_verse, end_verse FROM verse_passage_map
+                    WHERE translation = ? AND book = ? AND chapter = ? AND verse = ?
+                    LIMIT 1
+                """, (trans_val, book, chapter, verse))
+                row = cursor.fetchone()
+            except sqlite3.OperationalError:
+                # Passage map not built yet -> behave as single-verse (safe fallback).
+                return (verse, verse)
+            if row:
+                return (row["start_verse"], row["end_verse"])
+            return (verse, verse)
+
+    def get_passage_pieces(self, reference: str, translation: str) -> List[Tuple[int, str]]:
+        """Returns ordered [(verse_no, text), ...] for a single verse or a range reference."""
+        trans_val = translation.value if hasattr(translation, 'value') else str(translation)
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            parsed = self.parse_reference(reference)
+            if not parsed:
+                cursor.execute(
+                    "SELECT verse, text FROM verses WHERE reference = ? AND translation = ? ORDER BY verse ASC",
+                    (reference, trans_val)
+                )
+                return [(r["verse"], r["text"]) for r in cursor.fetchall()]
+            book, chap, start_v, end_v = parsed
+            cursor.execute("""
+                SELECT verse, text FROM verses
+                WHERE book = ? AND chapter = ? AND verse >= ? AND verse <= ? AND translation = ?
+                ORDER BY verse ASC
+            """, (book, chap, start_v, end_v, trans_val))
+            return [(r["verse"], r["text"]) for r in cursor.fetchall()]
+
+    def expand_to_passage(self, verse: Optional[VerseModel]) -> Optional[VerseModel]:
+        """
+        Expands a single anchor verse to its natural passage unit so connected verses
+        are shown together for context. Honors an already-curated range as-is, and keeps
+        the anchor verse id unchanged so pinning and daily dedup stay stable.
+        """
+        if not verse:
+            return verse
+        # Already a range (e.g. an AI-curated seed like 'John 10:11-15') -> honor it.
+        if verse.reference and "-" in verse.reference:
+            return verse
+        trans_val = verse.translation.value if hasattr(verse.translation, 'value') else str(verse.translation)
+        start_v, end_v = self.get_passage_span(verse.book, verse.chapter, verse.verse, trans_val)
+        if end_v <= start_v:
+            return verse
+        pieces = self.get_passage_pieces(f"{verse.book} {verse.chapter}:{start_v}-{end_v}", trans_val)
+        if len(pieces) <= 1:
+            return verse
+        verse.reference = f"{verse.book} {verse.chapter}:{start_v}-{end_v}"
+        verse.text = " ".join(t for _, t in pieces)
+        return verse
+
     def get_next_queue_verse(self) -> Optional[VerseModel]:
         today_str = date.today().isoformat()
         settings = self.get_settings()
@@ -710,7 +689,7 @@ class DatabaseManager:
                     (queue_id,)
                 )
                 conn.commit()
-                return self._row_to_verse(row)
+                return self.expand_to_passage(self._row_to_verse(row))
 
             # 2. Get all verses shown today to avoid repeating recently shown verses
             cursor.execute("SELECT verse_id FROM active_queue WHERE day_date = ?", (today_str,))
@@ -726,16 +705,12 @@ class DatabaseManager:
             if is_custom and settings.active_custom_theme_id:
                 ct = self.get_custom_theme(settings.active_custom_theme_id)
                 if ct:
-                    # A. Seed references
+                    # A. Seed references (range-aware: 'John 10:11-15' expands to a passage)
                     if ct.seed_references:
                         for ref in ct.seed_references:
-                            cursor.execute(
-                                "SELECT * FROM verses WHERE reference = ? AND translation = ? LIMIT 1",
-                                (ref, settings.active_translation.value)
-                            )
-                            r = cursor.fetchone()
-                            if r:
-                                candidates.append(self._row_to_verse(r))
+                            seed_verse = self.get_verse_by_ref(ref, settings.active_translation.value)
+                            if seed_verse:
+                                candidates.append(seed_verse)
 
                     # B. Dynamic vector search for custom theme anchors
                     if ct.semantic_anchors:
@@ -823,7 +798,7 @@ class DatabaseManager:
             """, (today_str, chosen_verse.id, shown_today_count + 1))
             conn.commit()
 
-            return chosen_verse
+            return self.expand_to_passage(chosen_verse)
 
     def _row_to_verse(self, row: sqlite3.Row) -> VerseModel:
         tags_raw = row["tags"] if "tags" in row.keys() else "[]"

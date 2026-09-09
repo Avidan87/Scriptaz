@@ -19,8 +19,6 @@ from core.models import (
     ScriptureTheme,
     UserSettingsModel,
     CustomThemeModel,
-    InsightRequest,
-    StructuredInsight,
     PinnedVerseModel
 )
 from core.db import db

@@ -523,58 +523,58 @@ def get_control_panel_qss(is_dark: bool = True) -> str:
     """
 
 
-def format_scripture_html(text: str, reference: str, is_dark: bool = False) -> str:
-    """Formats Scripture text cleanly without forced double quotes, with breathable line height and dynamic sizing."""
-    c = THEMES["dark"] if is_dark else THEMES["light"]
-    
-    clean_text = text.strip()
-    # Strip any leading/trailing quotes if they were in the raw source
-    if (clean_text.startswith('"') and clean_text.endswith('"')) or (clean_text.startswith('“') and clean_text.endswith('”')):
-        clean_text = clean_text[1:-1].strip()
+def _strip_wrapping_quotes(t: str) -> str:
+    t = t.strip()
+    if (t.startswith('"') and t.endswith('"')) or (t.startswith('“') and t.endswith('”')):
+        t = t[1:-1].strip()
+    return t
 
-    # Dynamic typography sizing: adjust font size so long passages breathe naturally
-    length = len(clean_text)
-    if length > 350:
-        font_size = "14.5px"
-        line_height = "1.8"
-    elif length > 160:
-        font_size = "15.5px"
-        line_height = "1.8"
+
+def format_scripture_html(text: str, reference: str, is_dark: bool = False, verses=None) -> str:
+    """
+    Formats Scripture text with breathable line height and dynamic sizing.
+
+    Single verse: rendered as clean flowing text.
+    Multi-verse passage (pass `verses` as an ordered list of (verse_no, text)):
+    rendered as one continuous passage with small superscript verse numbers, so the
+    reader can see it is connected scripture without it fragmenting into a list.
+    """
+    c = THEMES["dark"] if is_dark else THEMES["light"]
+
+    is_passage = bool(verses) and len(verses) > 1
+
+    if is_passage:
+        length = sum(len(t) for _, t in verses)
     else:
-        font_size = "17px"
-        line_height = "1.8"
+        length = len(_strip_wrapping_quotes(text))
+
+    # Dynamic typography: shrink slightly as the passage grows so it always breathes.
+    if length > 520:
+        font_size, line_height = "13.5px", "1.75"
+    elif length > 350:
+        font_size, line_height = "14.5px", "1.8"
+    elif length > 160:
+        font_size, line_height = "15.5px", "1.8"
+    else:
+        font_size, line_height = "17px", "1.8"
+
+    if is_passage:
+        num_color = c["accent"]
+        parts = []
+        for vnum, vtext in verses:
+            vt = _strip_wrapping_quotes(vtext)
+            parts.append(
+                f'<sup style="color:{num_color}; font-size:0.68em; font-weight:700; '
+                f'padding-right:2px; vertical-align:super;">{vnum}</sup>{vt}'
+            )
+        body = " ".join(parts)
+    else:
+        body = _strip_wrapping_quotes(text)
 
     return f"""
     <div style="font-family: '.AppleSystemUIFont', 'Helvetica Neue', 'Helvetica', sans-serif; padding: 4px 2px;">
         <div style="font-size: {font_size}; line-height: {line_height}; color: {c['text_primary']}; font-weight: 400; letter-spacing: 0.2px;">
-            {clean_text}
+            {body}
         </div>
-    </div>
-    """
-
-
-def format_insight_html(text: str, is_dark: bool = False) -> str:
-    """Formats Deep Insight brotherly reflections with spacious, readable micro-paragraphs."""
-    c = THEMES["dark"] if is_dark else THEMES["light"]
-    
-    paragraphs = text.strip().split("\n\n")
-    html_paragraphs = ""
-    for p in paragraphs:
-        p_clean = p.strip()
-        if not p_clean:
-            continue
-            
-        # Section titles or bullet points
-        if p_clean.startswith("###") or p_clean.startswith("##"):
-            title = p_clean.lstrip("#").strip()
-            html_paragraphs += f"""<div style="margin: 18px 0px 8px 0px; font-size: 13px; font-weight: 700; color: {c['accent']}; letter-spacing: 0.5px; text-transform: uppercase;">{title}</div>"""
-        elif p_clean.startswith("\u2022") or p_clean.startswith("-"):
-            html_paragraphs += f"""<div style="margin-bottom: 10px; font-size: 13.5px; line-height: 1.7; color: {c['text_primary']}; padding-left: 8px;">{p_clean}</div>"""
-        else:
-            html_paragraphs += f"""<p style="margin: 0px 0px 16px 0px; font-size: 14px; line-height: 1.8; color: {c['text_primary']}; letter-spacing: 0.15px;">{p_clean}</p>"""
-
-    return f"""
-    <div style="font-family: 'SF Pro Text', 'Helvetica Neue', 'Segoe UI', Roboto, sans-serif; padding: 4px 6px;">
-        {html_paragraphs}
     </div>
     """

@@ -1,3 +1,3 @@
 """
-Scriptaz UI Module: Native floating popup cards, accordion deep insight renderer, and settings panel.
+Scriptaz UI Module: Native floating popup cards and settings panel.
 """

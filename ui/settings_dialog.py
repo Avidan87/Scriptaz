@@ -666,8 +666,8 @@ class HowItWorksDialog(QDialog):
             ),
             (
                 "lightbulb",
-                "Deep Insight Wings & Context",
-                "Every scripture drop includes surrounding chapter context, original Greek and Hebrew root insights, and actionable reflections for practical workday application."
+                "Four Trusted Translations",
+                "Read every drop in KJV, NKJV, ESV, or NLT and switch between them right on the card to find the wording that speaks clearest to you."
             ),
             (
                 "pin",

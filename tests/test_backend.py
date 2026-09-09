@@ -16,8 +16,7 @@ from core.models import (
     VerseModel,
     BibleTranslation,
     ScriptureTheme,
-    UserSettingsModel,
-    InsightRequest
+    UserSettingsModel
 )
 from core.db import db
 from engine.bedrock_engine import bedrock_engine

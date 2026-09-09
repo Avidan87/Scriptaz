@@ -186,7 +186,14 @@ class ScripturePopupCard(QWidget):
     def _update_scripture_html(self):
         text = self.verse_data.get("text", "")
         ref = self.verse_data.get("reference", "")
-        formatted_html = format_scripture_html(text=text, reference=ref, is_dark=self.is_dark)
+        # For a connected passage (e.g. Ephesians 1:17-19), render each verse with a
+        # small superscript number so it reads as one continuous, contextual passage.
+        verses = None
+        if ref and "-" in ref:
+            pieces = db.get_passage_pieces(ref, self.current_trans)
+            if len(pieces) > 1:
+                verses = pieces
+        formatted_html = format_scripture_html(text=text, reference=ref, is_dark=self.is_dark, verses=verses)
         self.text_browser.setHtml(formatted_html)
 
     def _update_pin_ui(self):
@@ -234,10 +241,20 @@ class ScripturePopupCard(QWidget):
             self.cycle_trans_btn.setText(f" {self.current_trans}")
             self._update_scripture_html()
 
-        # Update verse_id for new translation and sync pinned state
+        # Update the anchor verse_id for the new translation and sync pinned state.
+        # For a passage reference the anchor is its first verse, so resolve by book/
+        # chapter/start-verse rather than the (non-existent) range reference row.
+        parsed = db.parse_reference(ref)
         with db._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT id FROM verses WHERE reference = ? AND translation = ? LIMIT 1", (ref, self.current_trans))
+            if parsed:
+                book, chap, start_v, _ = parsed
+                cursor.execute(
+                    "SELECT id FROM verses WHERE book = ? AND chapter = ? AND verse = ? AND translation = ? LIMIT 1",
+                    (book, chap, start_v, self.current_trans)
+                )
+            else:
+                cursor.execute("SELECT id FROM verses WHERE reference = ? AND translation = ? LIMIT 1", (ref, self.current_trans))
             row = cursor.fetchone()
             if row:
                 self.verse_id = row["id"]
