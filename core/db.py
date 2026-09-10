@@ -130,6 +130,19 @@ class DatabaseManager:
             """)
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_queue_day ON active_queue(day_date, is_shown);")
 
+            # 8. Theme Rotation Memory (cross-day, ALL themes: preset & custom)
+            # theme_key is 'preset:<Name>' or 'custom:<id>' so every theme rotates
+            # through its whole pool without repeating, then resets when exhausted.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS theme_history (
+                    theme_key TEXT NOT NULL,
+                    verse_id INTEGER NOT NULL,
+                    shown_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (theme_key, verse_id)
+                );
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_theme_history ON theme_history(theme_key);")
+
             conn.commit()
 
     def insert_verse(self, verse: VerseModel) -> int:
@@ -756,22 +769,44 @@ class DatabaseManager:
             if not candidates:
                 return None
 
-            # 4. Filter out verses already shown today. For custom themes also filter
-            #    verses already shown recently for this theme (cross-day memory), so it
-            #    rotates through the whole thematic pool instead of replaying the same
-            #    seed verses in the same order every day.
-            custom_theme_id = settings.active_custom_theme_id if is_custom else None
-            history_ids = set()
-            if custom_theme_id:
-                cursor.execute("SELECT verse_id FROM custom_theme_history WHERE theme_id = ?", (custom_theme_id,))
-                history_ids = {r["verse_id"] for r in cursor.fetchall()}
+            # 3b. Collapse candidates to ONE representative per passage, normalised to
+            #     the passage's start verse. Prevents the same passage (e.g. Proverbs
+            #     1:1-6) from recurring via different anchor verses, and makes the
+            #     same-day / cross-day de-dup below consistent.
+            trans_val = settings.active_translation.value if hasattr(settings.active_translation, 'value') else str(settings.active_translation)
+            seen_spans = set()
+            deduped = []
+            for v in candidates:
+                start_v, end_v = self.get_passage_span(v.book, v.chapter, v.verse, trans_val)
+                span_key = (v.book, v.chapter, start_v, end_v)
+                if span_key in seen_spans:
+                    continue
+                seen_spans.add(span_key)
+                if start_v != v.verse:
+                    rep = self.get_verse_by_ref(f"{v.book} {v.chapter}:{start_v}", trans_val) or v
+                    deduped.append(rep)
+                else:
+                    deduped.append(v)
+            candidates = deduped
+
+            # 4. Filter out verses already shown today AND verses shown recently for
+            #    THIS theme (cross-day memory), so every theme — preset or custom —
+            #    rotates through its whole pool instead of replaying the same verses
+            #    in the same order every day.
+            if is_custom and settings.active_custom_theme_id:
+                theme_key = f"custom:{settings.active_custom_theme_id}"
+            else:
+                theme_key = f"preset:{settings.active_theme.value if hasattr(settings.active_theme, 'value') else settings.active_theme}"
+
+            cursor.execute("SELECT verse_id FROM theme_history WHERE theme_key = ?", (theme_key,))
+            history_ids = {r["verse_id"] for r in cursor.fetchall()}
 
             unshown = [v for v in candidates if v.id not in already_shown_set and v.id not in history_ids]
 
-            # If a custom theme has cycled through its entire pool, reset its history so
-            # it starts fresh rather than running dry.
-            if custom_theme_id and not unshown:
-                cursor.execute("DELETE FROM custom_theme_history WHERE theme_id = ?", (custom_theme_id,))
+            # Once a theme has cycled through its entire pool, reset its history so it
+            # starts fresh rather than running dry.
+            if not unshown:
+                cursor.execute("DELETE FROM theme_history WHERE theme_key = ?", (theme_key,))
                 history_ids = set()
                 unshown = [v for v in candidates if v.id not in already_shown_set]
 
@@ -803,24 +838,24 @@ class DatabaseManager:
 
             import random
             if unshown:
-                # For a custom theme (without an explicit personal-context ranking), draw
-                # with variety from the whole on-theme pool so it flows and never feels
-                # hardcoded to the seed list. Standard themes keep their ranked order.
-                if custom_theme_id and not has_personal_ctx:
-                    chosen_verse = random.choice(unshown)
-                else:
+                # Draw with variety from the whole on-theme pool so it flows and never
+                # feels hardcoded. When the user gave a personal context we instead keep
+                # the context-ranked order (best-aligned verse first).
+                if has_personal_ctx:
                     chosen_verse = unshown[0]
+                else:
+                    chosen_verse = random.choice(unshown)
             else:
                 last_shown_id = already_shown_today[-1] if already_shown_today else None
                 fallback_pool = [v for v in candidates if v.id != last_shown_id] or candidates
                 chosen_verse = random.choice(fallback_pool)
 
-            # Remember this pick for the custom theme (cross-day rotation memory).
-            if custom_theme_id and chosen_verse and chosen_verse.id:
+            # Remember this pick for the theme (cross-day rotation memory, all themes).
+            if chosen_verse and chosen_verse.id:
                 cursor.execute(
-                    "INSERT INTO custom_theme_history (theme_id, verse_id) VALUES (?, ?) "
-                    "ON CONFLICT(theme_id, verse_id) DO UPDATE SET shown_at = CURRENT_TIMESTAMP",
-                    (custom_theme_id, chosen_verse.id)
+                    "INSERT INTO theme_history (theme_key, verse_id) VALUES (?, ?) "
+                    "ON CONFLICT(theme_key, verse_id) DO UPDATE SET shown_at = CURRENT_TIMESTAMP",
+                    (theme_key, chosen_verse.id)
                 )
 
             # 5. Insert into active_queue and mark shown
