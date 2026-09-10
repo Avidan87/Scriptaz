@@ -712,14 +712,15 @@ class DatabaseManager:
                             if seed_verse:
                                 candidates.append(seed_verse)
 
-                    # B. Dynamic vector search for custom theme anchors
+                    # B. Dynamic vector search across ALL theme anchors, for a rich,
+                    #    on-theme pool the delivery can rotate through with variety.
                     if ct.semantic_anchors:
                         from engine.theme_architect import theme_architect
-                        for anchor in ct.semantic_anchors[:3]:
+                        for anchor in ct.semantic_anchors:
                             matches = theme_architect.vector_search_verses(
                                 anchor,
                                 translation=settings.active_translation.value,
-                                top_k=8,
+                                top_k=12,
                                 min_similarity=0.36
                             )
                             for v_id, score in matches:
@@ -755,11 +756,28 @@ class DatabaseManager:
             if not candidates:
                 return None
 
-            # 4. Filter out verses already shown today
-            unshown = [v for v in candidates if v.id not in already_shown_set]
+            # 4. Filter out verses already shown today. For custom themes also filter
+            #    verses already shown recently for this theme (cross-day memory), so it
+            #    rotates through the whole thematic pool instead of replaying the same
+            #    seed verses in the same order every day.
+            custom_theme_id = settings.active_custom_theme_id if is_custom else None
+            history_ids = set()
+            if custom_theme_id:
+                cursor.execute("SELECT verse_id FROM custom_theme_history WHERE theme_id = ?", (custom_theme_id,))
+                history_ids = {r["verse_id"] for r in cursor.fetchall()}
+
+            unshown = [v for v in candidates if v.id not in already_shown_set and v.id not in history_ids]
+
+            # If a custom theme has cycled through its entire pool, reset its history so
+            # it starts fresh rather than running dry.
+            if custom_theme_id and not unshown:
+                cursor.execute("DELETE FROM custom_theme_history WHERE theme_id = ?", (custom_theme_id,))
+                history_ids = set()
+                unshown = [v for v in candidates if v.id not in already_shown_set]
 
             # Optional: Sub-topic biasing if personal_context provided
-            if unshown and settings.personal_context and settings.personal_context.strip():
+            has_personal_ctx = bool(settings.personal_context and settings.personal_context.strip())
+            if unshown and has_personal_ctx:
                 try:
                     from engine.bedrock_engine import bedrock_engine
                     import numpy as np
@@ -783,13 +801,27 @@ class DatabaseManager:
                 except Exception:
                     pass
 
+            import random
             if unshown:
-                chosen_verse = unshown[0]
+                # For a custom theme (without an explicit personal-context ranking), draw
+                # with variety from the whole on-theme pool so it flows and never feels
+                # hardcoded to the seed list. Standard themes keep their ranked order.
+                if custom_theme_id and not has_personal_ctx:
+                    chosen_verse = random.choice(unshown)
+                else:
+                    chosen_verse = unshown[0]
             else:
                 last_shown_id = already_shown_today[-1] if already_shown_today else None
                 fallback_pool = [v for v in candidates if v.id != last_shown_id] or candidates
-                import random
                 chosen_verse = random.choice(fallback_pool)
+
+            # Remember this pick for the custom theme (cross-day rotation memory).
+            if custom_theme_id and chosen_verse and chosen_verse.id:
+                cursor.execute(
+                    "INSERT INTO custom_theme_history (theme_id, verse_id) VALUES (?, ?) "
+                    "ON CONFLICT(theme_id, verse_id) DO UPDATE SET shown_at = CURRENT_TIMESTAMP",
+                    (custom_theme_id, chosen_verse.id)
+                )
 
             # 5. Insert into active_queue and mark shown
             cursor.execute("""
