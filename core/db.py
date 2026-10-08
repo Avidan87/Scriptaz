@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
 
 from core.config import config
+from core.data_pack import ensure_data_pack
 from core.models import (
     VerseModel,
     BibleTranslation,
@@ -27,6 +28,11 @@ from core.models import (
 class DatabaseManager:
     def __init__(self, db_path: Optional[Path] = None):
         self.db_path = db_path or config.db_path
+        self.data_pack_status = ensure_data_pack(
+            self.db_path,
+            release_url=config.data_pack_url,
+            expected_sha256=config.data_pack_sha256,
+        )
         self.init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
@@ -129,6 +135,32 @@ class DatabaseManager:
                 );
             """)
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_queue_day ON active_queue(day_date, is_shown);")
+            # Migration: tag queued rows with the theme they were built for, so a
+            # mid-day theme switch never serves stale prefetched verses from the
+            # previous theme.
+            cursor.execute("PRAGMA table_info(active_queue);")
+            aq_cols = [r["name"] for r in cursor.fetchall()]
+            if "theme_key" not in aq_cols:
+                cursor.execute("ALTER TABLE active_queue ADD COLUMN theme_key TEXT;")
+
+            # 9. Theme Teaching Journey (ordered arc, built once per theme).
+            # theme_key is 'preset:<Name>' or 'custom:<id>'. Delivery walks stages in
+            # order (one per drop) BEFORE ambient rotation; each references a canonical
+            # verse/passage resolved against the active translation at delivery time.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS theme_journey (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    theme_key TEXT NOT NULL,
+                    stage_order INTEGER NOT NULL,
+                    reference TEXT NOT NULL,
+                    stage_title TEXT,
+                    rationale TEXT,
+                    is_delivered INTEGER DEFAULT 0,
+                    delivered_at TIMESTAMP,
+                    UNIQUE(theme_key, stage_order)
+                );
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_journey_lookup ON theme_journey(theme_key, is_delivered, stage_order);")
 
             # 8. Theme Rotation Memory (cross-day, ALL themes: preset & custom)
             # theme_key is 'preset:<Name>' or 'custom:<id>' so every theme rotates
@@ -250,32 +282,6 @@ class DatabaseManager:
                 )
                 rows = cursor.fetchall()
             return [self._row_to_verse(r) for r in rows]
-
-    def get_next_verse_for_user(self, theme: str = "Wisdom", translation: str = "NLT") -> Optional[Dict]:
-        """Pulls the next unread or relevant verse for the active theme and preferred translation."""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            theme_val = theme.value if hasattr(theme, 'value') else str(theme)
-            trans_val = translation.value if hasattr(translation, 'value') else str(translation)
-            
-            cursor.execute("""
-                SELECT id, book, chapter, verse, reference, translation, text, theme
-                FROM verses
-                WHERE theme = ? AND translation = ?
-                ORDER BY RANDOM()
-                LIMIT 1
-            """, (theme_val, trans_val))
-            row = cursor.fetchone()
-            if not row:
-                cursor.execute("""
-                    SELECT id, book, chapter, verse, reference, translation, text, theme
-                    FROM verses
-                    WHERE translation = ?
-                    ORDER BY RANDOM()
-                    LIMIT 1
-                """, (trans_val,))
-                row = cursor.fetchone()
-            return dict(row) if row else None
 
     def get_all_translations_for_ref(self, reference: str) -> Dict[str, str]:
         """Returns 4-way translation text for a single verse or multi-verse range (e.g. 'Ephesians 1:17-20')."""
@@ -515,6 +521,70 @@ class DatabaseManager:
             return set(r["verse_id"] for r in cursor.fetchall())
 
     # ----------------------------------------------------------------------
+    # Theme Teaching Journey: an ordered arc built once per theme, walked one
+    # stage per delivery before ambient rotation takes over.
+    # ----------------------------------------------------------------------
+    @staticmethod
+    def theme_key_for(settings: UserSettingsModel) -> str:
+        """Canonical rotation/journey key for the active theme ('custom:<id>' or 'preset:<Name>')."""
+        is_custom = (settings.active_theme == ScriptureTheme.CUSTOM
+                     or str(settings.active_theme.value).lower() == "custom")
+        if is_custom and settings.active_custom_theme_id:
+            return f"custom:{settings.active_custom_theme_id}"
+        theme_name = settings.active_theme.value if hasattr(settings.active_theme, 'value') else str(settings.active_theme)
+        return f"preset:{theme_name}"
+
+    def save_journey_stages(self, theme_key: str, stages: List[Dict[str, Any]]):
+        """Replaces the stored journey for a theme with an ordered list of stages.
+        Each stage: {'reference': str, 'stage_title': str, 'rationale': str}."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM theme_journey WHERE theme_key = ?", (theme_key,))
+            for order, st in enumerate(stages):
+                cursor.execute("""
+                    INSERT INTO theme_journey (theme_key, stage_order, reference, stage_title, rationale, is_delivered)
+                    VALUES (?, ?, ?, ?, ?, 0)
+                """, (theme_key, order, st.get("reference", ""), st.get("stage_title", ""), st.get("rationale", "")))
+            conn.commit()
+
+    def has_journey(self, theme_key: str) -> bool:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1 FROM theme_journey WHERE theme_key = ? LIMIT 1", (theme_key,))
+            return cursor.fetchone() is not None
+
+    def pop_next_journey_stage(self, theme_key: str) -> Optional[Dict[str, Any]]:
+        """Returns the next undelivered stage and marks it delivered, atomically.
+        Returns None when the journey is exhausted (delivery then falls to ambient)."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, stage_order, reference, stage_title, rationale
+                FROM theme_journey
+                WHERE theme_key = ? AND is_delivered = 0
+                ORDER BY stage_order ASC LIMIT 1
+            """, (theme_key,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            cursor.execute(
+                "UPDATE theme_journey SET is_delivered = 1, delivered_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (row["id"],)
+            )
+            conn.commit()
+            return {
+                "reference": row["reference"],
+                "stage_title": row["stage_title"],
+                "rationale": row["rationale"],
+                "stage_order": row["stage_order"],
+            }
+
+    def clear_journey(self, theme_key: str):
+        with self._get_connection() as conn:
+            conn.cursor().execute("DELETE FROM theme_journey WHERE theme_key = ?", (theme_key,))
+            conn.commit()
+
+    # ----------------------------------------------------------------------
     # Pinned Verses: 7-Day Active Cycle & Permanent Memory Archive
     # ----------------------------------------------------------------------
     def pin_verse(self, verse_id: int, notes: Optional[str] = None) -> bool:
@@ -532,16 +602,40 @@ class DatabaseManager:
             return True
 
     def unpin_verse(self, verse_id: int) -> bool:
+        """Hard-delete a pin (used by the Settings archive 'delete forever' action)."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM pinned_verses WHERE verse_id = ?", (verse_id,))
             conn.commit()
             return cursor.rowcount > 0
 
-    def is_verse_pinned(self, verse_id: int) -> bool:
+    def pause_pin(self, verse_id: int) -> bool:
+        """Stop resurfacing a verse in the active rotation but KEEP it in the archive.
+        This is the default popup 'unpin' action — distinct from delete-forever."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT 1 FROM pinned_verses WHERE verse_id = ?", (verse_id,))
+            cursor.execute("UPDATE pinned_verses SET is_active_cycle = 0 WHERE verse_id = ?", (verse_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def expire_stale_pins(self, max_days: int = 7) -> int:
+        """Deactivates (does not delete) pins whose 7-day active window has passed."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE pinned_verses SET is_active_cycle = 0 "
+                "WHERE is_active_cycle = 1 AND julianday('now') - julianday(pinned_at) >= ?",
+                (max_days,)
+            )
+            conn.commit()
+            return cursor.rowcount
+
+    def is_verse_pinned(self, verse_id: int) -> bool:
+        """True only when the verse is ACTIVELY pinned (in the resurfacing cycle).
+        A paused/expired pin still lives in the archive but the heart shows unfilled."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1 FROM pinned_verses WHERE verse_id = ? AND is_active_cycle = 1", (verse_id,))
             return cursor.fetchone() is not None
 
     def get_active_pinned_verses(self, max_days: int = 7) -> List[PinnedVerseModel]:
@@ -681,18 +775,38 @@ class DatabaseManager:
     def get_next_queue_verse(self) -> Optional[VerseModel]:
         today_str = date.today().isoformat()
         settings = self.get_settings()
-        
+        theme_key = self.theme_key_for(settings)
+        trans_for_journey = settings.active_translation.value if hasattr(settings.active_translation, 'value') else str(settings.active_translation)
+
+        # 0. TEACHING JOURNEY FIRST. While the active theme still has undelivered
+        #    journey stages, walk them in order (one per delivery) before any ambient
+        #    rotation. This is a pure local table read — no AWS — so it needs no
+        #    prefetch and stays instant/offline.
+        stage = self.pop_next_journey_stage(theme_key)
+        if stage:
+            jverse = self.get_verse_by_ref(stage["reference"], trans_for_journey)
+            if jverse:
+                jverse.journey_stage_title = stage.get("stage_title") or None
+                jverse.journey_rationale = stage.get("rationale") or None
+                return self.expand_to_passage(jverse)
+            # Stage reference didn't resolve in this translation — skip it and fall
+            # through so the user still gets a verse this drop.
+
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            
+
+            # 1. Fast-path: pop a pre-fetched, unshown verse for TODAY and THIS theme.
+            #    theme_key scoping means a mid-day theme switch never serves stale
+            #    verses queued for the previous theme.
             cursor.execute("""
                 SELECT q.id as queue_id, v.*
                 FROM active_queue q
                 JOIN verses v ON q.verse_id = v.id
                 WHERE q.day_date = ? AND q.is_shown = 0
+                  AND (q.theme_key = ? OR q.theme_key IS NULL)
                 ORDER BY q.sequence_order ASC
                 LIMIT 1
-            """, (today_str,))
+            """, (today_str, theme_key))
             row = cursor.fetchone()
 
             if row:
@@ -792,12 +906,7 @@ class DatabaseManager:
             # 4. Filter out verses already shown today AND verses shown recently for
             #    THIS theme (cross-day memory), so every theme — preset or custom —
             #    rotates through its whole pool instead of replaying the same verses
-            #    in the same order every day.
-            if is_custom and settings.active_custom_theme_id:
-                theme_key = f"custom:{settings.active_custom_theme_id}"
-            else:
-                theme_key = f"preset:{settings.active_theme.value if hasattr(settings.active_theme, 'value') else settings.active_theme}"
-
+            #    in the same order every day. (theme_key computed once at the top.)
             cursor.execute("SELECT verse_id FROM theme_history WHERE theme_key = ?", (theme_key,))
             history_ids = {r["verse_id"] for r in cursor.fetchall()}
 
@@ -838,31 +947,46 @@ class DatabaseManager:
 
             import random
             if unshown:
-                # Draw with variety from the whole on-theme pool so it flows and never
-                # feels hardcoded. When the user gave a personal context we instead keep
-                # the context-ranked order (best-aligned verse first).
-                if has_personal_ctx:
-                    chosen_verse = unshown[0]
-                else:
-                    chosen_verse = random.choice(unshown)
+                # Order the whole on-theme pool for delivery. With a personal context we
+                # keep the context-ranked order (best-aligned first); otherwise shuffle
+                # for variety so it flows and never feels hardcoded.
+                ordered_pool = list(unshown)
+                if not has_personal_ctx:
+                    random.shuffle(ordered_pool)
             else:
                 last_shown_id = already_shown_today[-1] if already_shown_today else None
                 fallback_pool = [v for v in candidates if v.id != last_shown_id] or candidates
-                chosen_verse = random.choice(fallback_pool)
+                ordered_pool = [random.choice(fallback_pool)]
 
-            # Remember this pick for the theme (cross-day rotation memory, all themes).
-            if chosen_verse and chosen_verse.id:
+            # 5. PREFETCH the rest of today's cycle in one pass and stage it as real
+            #    unshown active_queue rows. Without this, every delivery would rebuild
+            #    the whole candidate pool from scratch — including live Bedrock vector
+            #    calls per anchor for custom themes — instead of just once per cycle.
+            #    The first pick is returned now (marked shown); the rest wait in the
+            #    queue for the fast-path above to serve on later drops.
+            remaining_today = max(1, settings.daily_limit - shown_today_count)
+            picks = ordered_pool[:remaining_today] or ordered_pool[:1]
+            chosen_verse = picks[0]
+
+            for i, v in enumerate(picks):
+                if not v.id:
+                    continue
+                # Remember each pick for the theme (cross-day rotation memory).
                 cursor.execute(
                     "INSERT INTO theme_history (theme_key, verse_id) VALUES (?, ?) "
                     "ON CONFLICT(theme_key, verse_id) DO UPDATE SET shown_at = CURRENT_TIMESTAMP",
-                    (theme_key, chosen_verse.id)
+                    (theme_key, v.id)
                 )
-
-            # 5. Insert into active_queue and mark shown
-            cursor.execute("""
-                INSERT INTO active_queue (day_date, verse_id, sequence_order, is_shown, shown_at)
-                VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP)
-            """, (today_str, chosen_verse.id, shown_today_count + 1))
+                if i == 0:
+                    cursor.execute("""
+                        INSERT INTO active_queue (day_date, verse_id, sequence_order, is_shown, shown_at, theme_key)
+                        VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP, ?)
+                    """, (today_str, v.id, shown_today_count + 1 + i, theme_key))
+                else:
+                    cursor.execute("""
+                        INSERT INTO active_queue (day_date, verse_id, sequence_order, is_shown, theme_key)
+                        VALUES (?, ?, ?, 0, ?)
+                    """, (today_str, v.id, shown_today_count + 1 + i, theme_key))
             conn.commit()
 
             return self.expand_to_passage(chosen_verse)
@@ -907,6 +1031,8 @@ class DatabaseManager:
                 "book": verse.book,
                 "chapter": verse.chapter,
                 "verse": verse.verse,
+                "journey_stage_title": verse.journey_stage_title,
+                "journey_rationale": verse.journey_rationale,
             }
         return None
 

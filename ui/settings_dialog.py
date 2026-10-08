@@ -105,10 +105,7 @@ class CurateWorker(QThread):
 
     def run(self):
         try:
-            theme_model = theme_architect.curate_custom_theme(
-                user_prompt=self.prompt,
-                preferred_translation=self.translation
-            )
+            theme_model = theme_architect.curate_custom_theme(user_prompt=self.prompt)
             self.finished.emit(theme_model)
         except Exception as e:
             self.failed.emit(str(e))
@@ -1380,7 +1377,9 @@ class SettingsDialog(QDialog):
     def _on_curate_failed(self, err_msg: str):
         self.curate_btn.setEnabled(True)
         self.curate_btn.setText(" Curate")
-        self.curate_status_lbl.setText(f"Note: Saved with local anchors")
+        # Honest failure message — nothing was saved when the worker errors.
+        self.curate_status_lbl.setText("Curate failed — please try again.")
+        self.curate_status_lbl.show()
 
     def _open_theme_history_dialog(self):
         dlg = ThemeHistoryDialog(is_dark=self.is_dark, parent=self)

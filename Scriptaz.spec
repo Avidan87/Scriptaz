@@ -18,8 +18,9 @@ a = Analysis(
     datas=datas,
     hiddenimports=[
         'engine.api',
-        'engine.theological_graph',
-        'engine.rag_service',
+        'engine.theme_architect',
+        'engine.journey_architect',
+        'engine.bedrock_engine',
         'core.db',
         'core.models',
         'core.config',

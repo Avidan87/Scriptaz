@@ -126,6 +126,20 @@ class ScripturePopupCard(QWidget):
         card_layout.addLayout(header)
 
         # -------------------------------------------------------------
+        # 1b. Journey stage caption (only when this verse is part of a
+        #     teaching journey) — the title of where the reader is in the arc.
+        # -------------------------------------------------------------
+        stage_title = (self.verse_data.get("journey_stage_title") or "").strip()
+        if stage_title:
+            self.stage_label = QLabel(stage_title.upper())
+            self.stage_label.setObjectName("JourneyStage")
+            c = THEMES["dark"] if self.is_dark else THEMES["light"]
+            self.stage_label.setStyleSheet(
+                f"color: {c['accent']}; font-size: 11px; font-weight: 700; letter-spacing: 1px;"
+            )
+            card_layout.addWidget(self.stage_label)
+
+        # -------------------------------------------------------------
         # 2. Scripture Reference & Text
         # -------------------------------------------------------------
         self.ref_label = QLabel(self.verse_data.get("reference", "Philippians 4:6–7"))
@@ -218,7 +232,8 @@ class ScripturePopupCard(QWidget):
             return
 
         if self.is_pinned:
-            db.unpin_verse(self.verse_id)
+            # Pause (stop resurfacing) but keep it in the archive — not a hard delete.
+            db.pause_pin(self.verse_id)
             self.is_pinned = False
         else:
             db.pin_verse(self.verse_id)

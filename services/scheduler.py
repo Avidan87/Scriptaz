@@ -139,18 +139,25 @@ class WorkdayScheduler(QObject):
             self.verses_delivered_today = 1
             self.current_cycle_number += 1
 
-        # 60/40 Rotation: Every 3rd drop attempts to draw from pinned verses (automatic drops only)
-        pinned_verses = db.get_pinned_verses()
+        # Pinned resurfacing: every 3rd automatic drop revisits an ACTIVE-cycle pin
+        # (within its 7-day window), rotating fairly across them. Expired pins fall
+        # out of rotation automatically but stay in the permanent archive.
+        db.expire_stale_pins()
+        pinned_verses = db.get_active_pinned_verses()
         verse_data = None
 
         if not force_fresh and pinned_verses and (self.drop_counter % 3 == 0):
             pinned_idx = (self.drop_counter // 3) % len(pinned_verses)
             pv = pinned_verses[pinned_idx]
+            # Expand to the pinned verse's natural passage so it reads with context,
+            # exactly like a normal delivery.
+            pv_verse = db.get_verse_by_id(pv.verse_id)
+            pv_verse = db.expand_to_passage(pv_verse) if pv_verse else None
             verse_data = {
                 "id": pv.verse_id,
-                "reference": pv.reference,
+                "reference": pv_verse.reference if pv_verse else pv.reference,
                 "translation": pv.translation.value if hasattr(pv.translation, 'value') else str(pv.translation),
-                "text": pv.text,
+                "text": pv_verse.text if pv_verse else pv.text,
                 "theme": pv.theme.value if hasattr(pv.theme, 'value') else str(pv.theme),
                 "notes": pv.notes
             }

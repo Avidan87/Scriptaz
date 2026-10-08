@@ -100,10 +100,7 @@ def create_custom_theme(req: CustomThemeCreateRequest):
     Takes user's natural language situation, uses the AI Theological Normalizer to generate title,
     theological summary, semantic anchors, and seeds, searches SQLite embeddings, and saves/activates it.
     """
-    theme = theme_architect.curate_custom_theme(
-        user_prompt=req.prompt,
-        preferred_translation=req.preferred_translation.value
-    )
+    theme = theme_architect.curate_custom_theme(user_prompt=req.prompt)
     return theme
 
 
@@ -142,32 +139,14 @@ def get_next_verse():
     settings = db.get_settings()
     is_pinned = False
     display_theme = settings.active_theme.value
-    
-    # 1. Custom Theme Stream
+
+    # Unified delivery: get_next_queue_verse handles preset AND custom themes,
+    # rotation, passage expansion, and the teaching journey internally.
     if settings.active_theme == ScriptureTheme.CUSTOM:
         active_custom = db.get_active_custom_theme()
         if active_custom:
             display_theme = active_custom.title
-            verse = theme_architect.get_next_custom_theme_verse(
-                theme=active_custom,
-                translation=settings.active_translation.value
-            )
-            if verse:
-                is_pinned = db.is_verse_pinned(verse.id) if verse.id else False
-                return ExtendedVerseResponse(
-                    id=verse.id,
-                    book=verse.book,
-                    chapter=verse.chapter,
-                    verse=verse.verse,
-                    reference=verse.reference,
-                    translation=verse.translation,
-                    text=verse.text,
-                    theme=display_theme,
-                    is_pinned=is_pinned,
-                    active_theme_display=display_theme
-                )
 
-    # 2. Standard Theme Queue
     verse = db.get_next_queue_verse()
     if not verse:
         verses = db.get_verses_by_theme(settings.active_theme.value, settings.active_translation.value)

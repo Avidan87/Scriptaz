@@ -48,6 +48,9 @@ class VerseModel(BaseModel):
     key_original_words: Optional[str] = None
     tags: Optional[List[str]] = Field(default_factory=list)
     created_at: Optional[datetime] = None
+    # Populated only when this verse is delivered as a stage of a teaching journey.
+    journey_stage_title: Optional[str] = None
+    journey_rationale: Optional[str] = None
 
 
 class UserSettingsModel(BaseModel):

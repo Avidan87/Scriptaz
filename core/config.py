@@ -48,6 +48,18 @@ class AppConfig:
     # S3 Settings
     s3_bucket_name: Optional[str] = os.getenv("S3_BUCKET_NAME")
 
+    # Versioned, public data-pack release. The full Scripture library and local
+    # semantic index live here rather than in Git history. Empty means no network
+    # download will be attempted (useful for development and offline installs).
+    data_pack_url: Optional[str] = os.getenv(
+        "SCRIPTAZ_DATA_PACK_URL",
+        "https://github.com/Avidan87/Scriptaz/releases/download/data-v1/scriptaz-data-v1.sqlite.gz",
+    )
+    data_pack_sha256: Optional[str] = os.getenv(
+        "SCRIPTAZ_DATA_PACK_SHA256",
+        "84e051a1eb2a96fa9068e3f8c1610b9e32acbb0306622f4cd3b301279df03805",
+    )
+
     # Local Paths
     app_name: str = "Scriptaz"
     data_dir: Path = Path.home() / "Library" / "Application Support" / "Scriptaz" if os.name != "nt" else Path.home() / "AppData" / "Local" / "Scriptaz"

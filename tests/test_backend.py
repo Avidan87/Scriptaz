@@ -26,8 +26,12 @@ from engine.api import app
 
 def test_all_endpoints():
     print(f"\n{'='*70}\n[RUNNING FULL FASTAPI ENDPOINT VERIFICATION SUITE (v2.0)]\n{'='*70}")
-    
+
     client = TestClient(app)
+
+    # Snapshot state we mutate so the test never pollutes the real DB.
+    original_settings = db.get_settings()
+    existing_theme_ids = {t.id for t in db.get_all_custom_themes()}
     
     # 1. System Health
     res = client.get("/api/health")
@@ -119,14 +123,27 @@ def test_all_endpoints():
     custom_data = res.json()
     assert "title" in custom_data
     assert len(custom_data["semantic_anchors"]) > 0
-    print(f"13. ✅ POST /api/custom-themes/create -> Curated: '{custom_data['title']}'")
+    created_theme_id = custom_data.get("id")
+    print(f"13. ✅ POST /api/custom-themes/create -> Curated: '{custom_data['title']}' (id={created_theme_id})")
 
     res = client.get("/api/custom-themes")
     assert res.status_code == 200
     assert len(res.json()) > 0
     print(f"14. ✅ GET /api/custom-themes -> Total custom themes: {len(res.json())}")
 
-    print(f"{'='*70}\n🎉 ALL 14 ENDPOINT TESTS PASSED WITH 100% SUCCESS!\n{'='*70}\n")
+    # ------------------------------------------------------------------
+    # CLEANUP: delete ONLY the exact theme id this run created (never touch
+    # any pre-existing/real theme), then restore the user's original settings.
+    # Bulletproof: keyed on the created id, and double-guarded so it can never
+    # delete a theme that existed before the test started.
+    # ------------------------------------------------------------------
+    if created_theme_id is not None and created_theme_id not in existing_theme_ids:
+        db.clear_journey(f"custom:{created_theme_id}")
+        db.delete_custom_theme(created_theme_id)
+    db.update_settings(original_settings)
+    print("15. ✅ CLEANUP -> Test-created theme removed, settings restored")
+
+    print(f"{'='*70}\n🎉 ALL ENDPOINT TESTS PASSED WITH 100% SUCCESS!\n{'='*70}\n")
 
 
 if __name__ == "__main__":

@@ -38,6 +38,11 @@ aws_credentials.json
 !data/seeds/*.sqlite
 data/cache/
 
+# Generated public-release data packs (publish these as verified Release assets,
+# never as Git blobs).
+*.sqlite.gz
+*.sqlite.gz.sha256
+
 # OS Specific
 .DS_Store
 .DS_Store?

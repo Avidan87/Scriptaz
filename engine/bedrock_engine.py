@@ -56,6 +56,50 @@ class BedrockEngine:
         text_parts = [b.get("text", "") for b in content_blocks if "text" in b]
         return "".join(text_parts).strip()
 
+    def converse_tool(
+        self,
+        user_text: str,
+        tool_name: str,
+        tool_schema: dict,
+        system_prompt: Optional[str] = None,
+        model_id: Optional[str] = None,
+        max_tokens: int = 1500,
+        temperature: float = 0.0,
+        tool_description: str = "Return structured output.",
+    ) -> Optional[dict]:
+        """Forces the model to answer via a single tool call and returns its input dict.
+
+        Tool-forcing (toolChoice) removes the free-text JSON-parsing failure mode:
+        the model MUST return arguments matching tool_schema, or nothing. Returns None
+        on any failure so callers can fall back safely. Defaults to the cheap/fast
+        fallback model (Nova Lite) — ideal for bulk one-time structured jobs.
+        """
+        if not self.client:
+            return None
+        mid = model_id or config.bedrock_fallback_model_id
+        tool = {
+            "toolSpec": {
+                "name": tool_name,
+                "description": tool_description,
+                "inputSchema": {"json": tool_schema},
+            }
+        }
+        try:
+            resp = self.client.converse(
+                modelId=mid,
+                system=[{"text": system_prompt}] if system_prompt else [],
+                messages=[{"role": "user", "content": [{"text": user_text}]}],
+                toolConfig={"tools": [tool], "toolChoice": {"tool": {"name": tool_name}}},
+                inferenceConfig={"temperature": temperature, "maxTokens": max_tokens},
+            )
+            for block in resp.get("output", {}).get("message", {}).get("content", []):
+                if "toolUse" in block and block["toolUse"].get("name") == tool_name:
+                    return block["toolUse"].get("input")
+            return None
+        except Exception as e:
+            print(f"converse_tool error ({tool_name}): {e}")
+            return None
+
     def generate_embedding(self, text: str) -> Optional[np.ndarray]:
         """Calls Bedrock Titan Text Embeddings V2 to generate a 512-dim vector."""
         if not self.client:

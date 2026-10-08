@@ -9,13 +9,13 @@ import json
 import logging
 import numpy as np
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Tuple
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT_DIR))
 
 from core.config import config
-from core.models import CustomThemeModel, VerseModel, BibleTranslation, ScriptureTheme
+from core.models import CustomThemeModel
 from core.db import db
 from engine.bedrock_engine import bedrock_engine
 
@@ -103,15 +103,21 @@ class ThemeArchitect:
             if not data.get("seed_references"):
                 data["seed_references"] = ["Philippians 4:6-7", "Proverbs 3:5-6", "Joshua 1:9"]
 
+            data["_ai_fallback"] = False
             return data
         except Exception as e:
-            logger.warning(f"AI normalizer fallback triggered: {e}")
-            
+            # SURFACE degradation loudly — a fallback theme is generic and off-prompt,
+            # so this must never pass silently. Logged AND printed so it shows in the
+            # app console/log, and flagged on the returned dict so the caller can act.
+            logger.error(f"⚠️ CURATE FALLBACK — AI normalization FAILED, using generic blueprint. Reason: {e}")
+            print(f"⚠️ Scriptaz curate: AI normalization failed ({e}). "
+                  f"Theme for '{user_prompt.strip()[:60]}' will be GENERIC, not tailored.")
+
             # Intelligent offline theological normalization
             words = [w.strip() for w in user_prompt.strip().split() if len(w.strip()) > 3][:4]
             title_core = " & ".join(words).title() if words else "Workday Guidance"
             dignified_title = f"Steadfast Faith: {title_core}"
-            
+
             return {
                 "theme_title": dignified_title,
                 "theological_summary": f"Standing firm in God's promises and wisdom when facing {user_prompt.strip()}.",
@@ -121,7 +127,8 @@ class ThemeArchitect:
                     "God is our refuge and strength very present help",
                     user_prompt.strip()
                 ],
-                "seed_references": ["Philippians 4:6-7", "Proverbs 3:5-6", "Psalm 46:1", "Isaiah 41:10"]
+                "seed_references": ["Philippians 4:6-7", "Proverbs 3:5-6", "Psalm 46:1", "Isaiah 41:10"],
+                "_ai_fallback": True
             }
 
     def _ensure_vector_cache(self, translation: str):
@@ -178,24 +185,24 @@ class ThemeArchitect:
 
         return results
 
-    def curate_custom_theme(
-        self,
-        user_prompt: str,
-        preferred_translation: str = "NKJV"
-    ) -> CustomThemeModel:
+    def curate_custom_theme(self, user_prompt: str) -> CustomThemeModel:
         """
         End-to-end pipeline:
-        1. Normalizes user prompt via AI.
-        2. Vector searches local SQLite embeddings across all anchors.
-        3. Saves and activates the custom theme in SQLite.
+        1. Normalizes user prompt via AI (translation-agnostic — anchors/seeds are
+           canonical references resolved against whatever translation is active at
+           delivery time, so no translation is needed here).
+        2. Saves and activates the custom theme in SQLite.
+        3. Builds a one-time teaching JOURNEY (ordered arc) for the theme.
+        The vector search that turns anchors into a verse pool happens at delivery
+        time (db.get_next_queue_verse), NOT here — keeping curate a single AI call.
         """
         norm_data = self.normalize_theme_prompt(user_prompt)
         title = norm_data.get("theme_title", "Custom Theme")
         summary = norm_data.get("theological_summary", "")
         anchors = norm_data.get("semantic_anchors", [])
         seeds = norm_data.get("seed_references", [])
+        ai_fallback = norm_data.get("_ai_fallback", False)
 
-        # Save to SQLite
         theme_id = db.save_custom_theme(
             title=title,
             user_prompt=user_prompt,
@@ -205,7 +212,7 @@ class ThemeArchitect:
             is_active=True
         )
 
-        return CustomThemeModel(
+        model = CustomThemeModel(
             id=theme_id,
             title=title,
             user_prompt=user_prompt,
@@ -215,53 +222,19 @@ class ThemeArchitect:
             is_active=True
         )
 
-    def get_next_custom_theme_verse(
-        self,
-        theme: CustomThemeModel,
-        translation: str = "NKJV"
-    ) -> Optional[VerseModel]:
-        """
-        Retrieves the next unshown scripture from the custom theme's dynamic vector stream.
-        """
-        shown_ids = db.get_custom_theme_shown_verse_ids(theme.id) if theme.id else set()
+        # Build the teaching journey once, now, at creation time. Never fatal — if it
+        # fails the theme still delivers via ambient rotation.
+        try:
+            from engine.journey_architect import journey_architect
+            journey_architect.build_journey_for_custom_theme(model)
+        except Exception as e:
+            logger.error(f"Journey build failed for theme {theme_id} ('{title}'): {e}")
 
-        # 1. First, check any seed references not yet shown
-        for ref in theme.seed_references:
-            v = db.get_verse_by_ref(ref, translation)
-            if v and v.id and v.id not in shown_ids:
-                if theme.id:
-                    db.record_custom_theme_shown(theme.id, v.id)
-                v.theme = ScriptureTheme.CUSTOM
-                return v
+        if ai_fallback:
+            logger.error(f"Theme {theme_id} ('{title}') was created from the GENERIC "
+                         f"fallback blueprint — AI normalization was unavailable.")
 
-        # 2. Dynamic multi-anchor vector search
-        candidate_ids = []
-        for anchor in theme.semantic_anchors:
-            matches = self.vector_search_verses(anchor, translation=translation, top_k=10, min_similarity=0.45)
-            for v_id, score in matches:
-                if v_id not in shown_ids and v_id not in candidate_ids:
-                    candidate_ids.append(v_id)
-
-        # 3. Pull first unshown candidate
-        if candidate_ids:
-            next_id = candidate_ids[0]
-            v = db.get_verse_by_id(next_id)
-            if v:
-                if theme.id:
-                    db.record_custom_theme_shown(theme.id, v.id)
-                v.theme = ScriptureTheme.CUSTOM
-                return v
-
-        # 4. Fallback if all candidates have been shown: reset history or pick top matching
-        if theme.semantic_anchors:
-            matches = self.vector_search_verses(theme.semantic_anchors[0], translation=translation, top_k=5)
-            if matches:
-                v = db.get_verse_by_id(matches[0][0])
-                if v:
-                    v.theme = ScriptureTheme.CUSTOM
-                    return v
-
-        return None
+        return model
 
 
 # Global Theme Architect Instance
