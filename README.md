@@ -4,6 +4,8 @@
 
 Scriptaz is a native desktop app that lives in your menu bar or system tray, bringing Scripture into the spaces between meetings, tasks, and ordinary moments—without becoming another noisy productivity app.
 
+> **Platform availability:** Scriptaz is currently available for **macOS**. A Windows version is actively in development and will be released in a future update.
+
 ## What it offers
 
 - 📖 **Four translations** — KJV, NKJV, ESV, and NLT, with quick comparison for any passage.
@@ -22,7 +24,7 @@ Scripture data pack → local SQLite library → theme / journey selection → d
 
 The Scripture library and semantic index are delivered as a versioned release asset rather than committed to Git. On first launch, Scriptaz downloads the data pack, verifies its checksum, and stores it in the application-data folder. The app then reads Scripture locally.
 
-## Quick start
+## Quick start (macOS)
 
 ```bash
 git clone https://github.com/Avidan87/Scriptaz.git
@@ -32,8 +34,6 @@ source .venv/bin/activate
 pip install -r requirements.txt
 python main.py --welcome
 ```
-
-On Windows, activate the environment with `.venv\\Scripts\\activate`.
 
 ## Optional AI curation
 
@@ -76,6 +76,6 @@ docs/       data-pack and release documentation
 
 ## Data-pack releases
 
-The full Scriptaz library is available through the project’s [GitHub Releases](https://github.com/Avidan87/Scriptaz/releases). It is checksum-verified before installation so an interrupted or corrupt download never replaces a working local library.
+The full Scriptaz library is available through the project’s [GitHub Releases](https://github.com/Avidan87/Scriptaz/releases). It is checksum-verified before installation so an interrupted or corrupt download never replaces a working library.
 
 Maintainers can find the packaging process in [the data-pack guide](docs/DATA_PACK.md).
