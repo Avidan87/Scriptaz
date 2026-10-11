@@ -6,6 +6,12 @@ Scriptaz is a native desktop app that lives in your menu bar or system tray, bri
 
 > **Platform availability:** Scriptaz is currently available for **macOS**. A Windows version is actively in development and will be released in a future update.
 
+## The app
+
+Scriptaz is a native **macOS desktop application**, not just a code sample. It runs as a quiet companion in the menu bar, with its Scripture library, notes, settings, and personal context stored locally on your device.
+
+This repository contains the public source and setup guide for developers who want to explore, run, or extend Scriptaz. Windows support is in progress.
+
 ## What it offers
 
 - 📖 **Four translations** — KJV, NKJV, ESV, and NLT, with quick comparison for any passage.
@@ -18,64 +24,53 @@ Scriptaz is a native desktop app that lives in your menu bar or system tray, bri
 ## How it works
 
 ```text
-Scripture data pack → local SQLite library → theme / journey selection → desktop Scripture card
-                                      ↘ optional Bedrock AI → personalised custom themes
+Scripture data pack ──► local SQLite database ──► desktop app
+                                                ├─ translations & comparison
+                                                ├─ teaching journeys
+                                                ├─ pins, notes & archive
+                                                └─ semantic search
+
+Optional AI provider ──► reflection / curation features
 ```
 
-The Scripture library and semantic index are delivered as a versioned release asset rather than committed to Git. On first launch, Scriptaz downloads the data pack, verifies its checksum, and stores it in the application-data folder. The app then reads Scripture locally.
+The core reading experience works locally. AI-powered curation is optional and requires your own provider credentials.
 
 ## Quick start (macOS)
 
-```bash
-git clone https://github.com/Avidan87/Scriptaz.git
-cd Scriptaz
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python main.py --welcome
-```
+1. Clone this repository.
+2. Create and activate a Python virtual environment.
+3. Install the dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+4. Follow the data-pack setup instructions below.
+5. Launch the app:
+   ```bash
+   python main.py
+   ```
 
-## Optional AI curation
+## Data pack setup
 
-Scriptaz works without an API key. AI is optional and is used only for features such as personalised custom-theme curation and deeper semantic discovery.
+The Scripture corpus and embeddings are distributed separately so the repository stays lightweight.
 
-The reference provider is Amazon Bedrock. To enable it, copy `.env.example` to `.env`, then configure AWS using your preferred secure method. The defaults are cost-conscious:
+1. Download the latest `scriptaz-data` release from the repository's Releases page.
+2. Extract it into the project directory, preserving the included folders.
+3. Start Scriptaz normally.
 
-- `us.deepseek.r1-v1:0` for richer curation
-- `amazon.nova-lite-v1:0` as a fast fallback
-- `amazon.titan-embed-text-v2:0` for semantic embeddings
+The app expects the bundled SQLite database and semantic-search assets to be available locally.
 
-Never commit `.env` files, AWS keys, or personal data.
+## Optional AI features
 
-## Architecture
+To enable AI-assisted reflection or curation, configure your preferred model provider in a local `.env` file. A lightweight model is sufficient for most tasks; Amazon Bedrock is also a strong option for deployment-minded setups.
 
-```text
-┌─────────────┐      ┌───────────────────┐      ┌──────────────────┐
-│ Native UI   │ ───▶ │ Local SQLite      │ ───▶ │ Scripture cards  │
-│ PySide6     │ ◀─── │ verses + indexes  │ ◀─── │ tray scheduler   │
-└─────────────┘      └─────────┬─────────┘      └──────────────────┘
-                               │
-                               │ optional
-                               ▼
-                      ┌───────────────────┐
-                      │ Amazon Bedrock    │
-                      │ theme curation    │
-                      └───────────────────┘
-```
+Never commit provider keys or personal local data.
 
-## Project structure
+## Development notes
 
-```text
-core/       configuration, local database, data-pack installation, models
-engine/     API, semantic search, and optional Bedrock orchestration
-services/   scheduling, auto-start, and platform integration
-ui/         native PySide6 desktop interface
-scripts/    data preparation and maintainer utilities
-docs/       data-pack and release documentation
-```
+- Scriptaz is designed as a local-first desktop experience.
+- The public repository is intended to be runnable, inspectable, and extendable.
+- macOS is the currently supported platform; Windows packaging is planned.
 
-## Data-pack releases
+## License
 
-The full Scriptaz library is available through the project’s [GitHub Releases](https://github.com/Avidan87/Scriptaz/releases). It is checksum-verified before installation so an interrupted or corrupt download never replaces a working library.
-
-Maintainers can find the packaging process in [the data-pack guide](docs/DATA_PACK.md).
+See [LICENSE](LICENSE).
